@@ -1,0 +1,21 @@
+name: Lint
+
+on: [push, pull_request]
+
+jobs:
+    pre-commit:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - run: sudo apt-get install pre-commit
+            - run: pre-commit run -a
+
+    buildifier:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: actions/cache@v3
+              with:
+                  path: ~/.cache/bazelisk
+                  key: ${{ runner.os }}--${{ hashFiles('**/.bazelversion') }}
+            - run: ./.github/workflows/buildifier.sh

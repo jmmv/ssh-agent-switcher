@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_binary")
+load("@rules_shtk//:rules.bzl", "shtk_test")
+
+go_binary(
+    name = "ssh-agent-switcher",
+    srcs = ["main.go"],
+    visibility = ["//visibility:public"],
+)
+
+shtk_test(
+    name = "inttest",
+    src = "inttest.sh",
+    data = [":ssh-agent-switcher"],
+)
