@@ -59,6 +59,16 @@ fi
 export SSH_AUTH_SOCK="/tmp/ssh-agent.${USER}"
 ```
 
+For `fish`, extend `~/.config/fish/config.fish` with the following:
+
+```sh
+if not test -e "/tmp/ssh-agent.$USER"
+    ~/.local/bin/ssh-agent-switcher &> /dev/null &
+    disown &> /dev/null || true
+end
+set -gx SSH_AUTH_SOCK "/tmp/ssh-agent.$USER"
+```
+
 ## Security considerations
 
 ssh-agent-switcher is intended to run under your personal unprivileged account
