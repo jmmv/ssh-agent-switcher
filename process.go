@@ -8,12 +8,23 @@ import (
 	"strings"
 )
 
+// getProcDir returns the base directory for proc filesystem
+// This can be overridden by setting PROCESS_OVERRIDE_PROC_DIR environment variable
+// which is useful for testing
+func getProcDir() string {
+	override := os.Getenv("PROCESS_OVERRIDE_PROC_DIR")
+	if override != "" {
+		return override
+	}
+	return "/proc"
+}
+
 // hasAttachedPts checks if the sshd process with the given PID has a PTS attached.
 //
 // The process description in 'ps' is either something like "sshd: user@notty" or "sshd: user@pts/1".
 func hasAttachedPts(pid int) bool {
 	// Read the process description
-	path := fmt.Sprintf("/proc/%d/cmdline", pid)
+	path := fmt.Sprintf("%s/%d/cmdline", getProcDir(), pid)
 	name, err := os.ReadFile(path)
 	if err != nil {
 		return false
@@ -42,7 +53,7 @@ func getSocketOwnerPid(socketPath string) (int, error) {
 // Returns true if it's an sshd process, false otherwise.
 func isSSHDProcess(pid int) bool {
 	// Read the process command line
-	cmdlinePath := fmt.Sprintf("/proc/%d/cmdline", pid)
+	cmdlinePath := fmt.Sprintf("%s/%d/cmdline", getProcDir(), pid)
 	cmdline, err := os.ReadFile(cmdlinePath)
 	if err != nil {
 		return false

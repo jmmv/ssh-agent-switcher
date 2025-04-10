@@ -81,12 +81,21 @@ integration_fixture() {
         # we would get automatic cleanup).
         SOCKETS_ROOT="$(mktemp -d -p /tmp)"
 
+        # Create a mock process directory and file to simulate an sshd process with PTS
+        # This will be used by the process validation functions
+        MOCK_PID=$$  # Use our own PID for simplicity
+        mkdir -p "/tmp/proc/${MOCK_PID}"
+        echo "sshd: user@pts/1" > "/tmp/proc/${MOCK_PID}/cmdline"
+
         # Place the agent socket under an ssh-* directory that sorts last.  We need this for
         # the unknown files test.
-        AGENT_AUTH_SOCK="${SOCKETS_ROOT}/ssh-zzz/agent.bar"
+        AGENT_AUTH_SOCK="${SOCKETS_ROOT}/ssh-zzz/agent.${MOCK_PID}"
 
         mkdir -p "$(dirname "${AGENT_AUTH_SOCK}")"
         ssh-agent -a "${AGENT_AUTH_SOCK}" >agent.env
+
+        # Override the process.go functions to use our mock directory
+        export PROCESS_OVERRIDE_PROC_DIR="/tmp/proc"
 
         SWITCHER_AUTH_SOCK="${SOCKETS_ROOT}/switcher"
         ../ssh-agent-switcher_/ssh-agent-switcher \
@@ -115,6 +124,7 @@ integration_fixture() {
         kill "${SSH_AGENT_PID}"
 
         rm -rf "${SOCKETS_ROOT}"
+        rm -rf "/tmp/proc/${MOCK_PID}"
     }
 
     shtk_unittest_add_test list_identities
@@ -140,6 +150,21 @@ integration_fixture() {
         mkdir "${SOCKETS_ROOT}/ssh-bar"
         touch "${SOCKETS_ROOT}/ssh-bar/agent.not-a-socket"
 
+        # Create a socket with invalid PID format
+        mkdir -p "${SOCKETS_ROOT}/ssh-invalid-pid"
+        touch "${SOCKETS_ROOT}/ssh-invalid-pid/agent.xyz"
+
+        # Create a socket with valid PID format but no corresponding process
+        mkdir -p "${SOCKETS_ROOT}/ssh-no-process"
+        touch "${SOCKETS_ROOT}/ssh-no-process/agent.99999"
+
+        # Create a socket with valid PID but no PTS attached
+        NOPTSPID=$((MOCK_PID + 1))
+        mkdir -p "/tmp/proc/${NOPTSPID}"
+        echo "sshd: user@notty" > "/tmp/proc/${NOPTSPID}/cmdline"
+        mkdir -p "${SOCKETS_ROOT}/ssh-no-pts"
+        touch "${SOCKETS_ROOT}/ssh-no-pts/agent.${NOPTSPID}"
+
         expect_command -s 1 -o match:"no identities" ssh-add -l
 
         # Ensure that the garbage was ignored for the correct reasons.
@@ -149,5 +174,13 @@ integration_fixture() {
         expect_file match:"Ignoring.*/ssh-empty.*no socket" switcher.log
         expect_file match:"Ignoring.*/ssh-foo/unknown.*start with.*agent" switcher.log
         expect_file match:"Ignoring.*/ssh-bar/agent.not-a-socket.*open failed" switcher.log
+
+        # Check new validation messages
+        expect_file match:"Ignoring.*/ssh-invalid-pid/agent.xyz.*invalid socket path" switcher.log
+        expect_file match:"Ignoring.*/ssh-no-process/agent.99999" switcher.log
+        expect_file match:"Ignoring.*/ssh-no-pts/agent.${NOPTSPID}.*does not have a PTS attached" switcher.log
+
+        # Clean up the additional mock process
+        rm -rf "/tmp/proc/${NOPTSPID}"
     }
 }

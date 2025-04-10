@@ -99,7 +99,7 @@ func findAgentSocketSubdir(dir string) (net.Conn, error) {
 		}
 
 		if !hasAttachedPts(pid) {
-			log.Printf("Ignoring %s: owning sshd process does not have a PTY attached\n", path)
+			log.Printf("Ignoring %s: owning sshd process does not have a PTS attached\n", path)
 			continue
 		}
 
