@@ -3,7 +3,10 @@ load("@rules_shtk//:rules.bzl", "shtk_test")
 
 go_binary(
     name = "ssh-agent-switcher",
-    srcs = ["main.go"],
+    srcs = [
+        "main.go",
+        "process.go",
+    ],
     visibility = ["//visibility:public"],
 )
 
