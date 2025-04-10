@@ -147,8 +147,6 @@ integration_fixture() {
         mkdir "${SOCKETS_ROOT}/ssh-empty"
         mkdir "${SOCKETS_ROOT}/ssh-foo"
         touch "${SOCKETS_ROOT}/ssh-foo/unknown"
-        mkdir "${SOCKETS_ROOT}/ssh-bar"
-        touch "${SOCKETS_ROOT}/ssh-bar/agent.not-a-socket"
 
         # Create a socket with invalid PID format
         mkdir -p "${SOCKETS_ROOT}/ssh-invalid-pid"
@@ -165,6 +163,13 @@ integration_fixture() {
         mkdir -p "${SOCKETS_ROOT}/ssh-no-pts"
         touch "${SOCKETS_ROOT}/ssh-no-pts/agent.${NOPTSPID}"
 
+        # Create a regular file with the name of a valid socket
+        NOTASOCKET=$((MOCK_PID + 2))
+        mkdir -p "/tmp/proc/${NOTASOCKET}"
+        echo "sshd: user@pts/1" > "/tmp/proc/${NOTASOCKET}/cmdline"
+        mkdir -p "${SOCKETS_ROOT}/ssh-not-a-socket"
+        touch "${SOCKETS_ROOT}/ssh-not-a-socket/agent.${NOTASOCKET}"
+
         expect_command -s 1 -o match:"no identities" ssh-add -l
 
         # Ensure that the garbage was ignored for the correct reasons.
@@ -173,7 +178,7 @@ integration_fixture() {
         expect_file match:"Ignoring.*/ssh-not-a-dir.*not a directory" switcher.log
         expect_file match:"Ignoring.*/ssh-empty.*no socket" switcher.log
         expect_file match:"Ignoring.*/ssh-foo/unknown.*start with.*agent" switcher.log
-        expect_file match:"Ignoring.*/ssh-bar/agent.not-a-socket.*open failed" switcher.log
+        expect_file match:"Ignoring.*/ssh-not-a-socket/agent.${NOTASOCKET}.*open failed" switcher.log
 
         # Check new validation messages
         expect_file match:"Ignoring.*/ssh-invalid-pid/agent.xyz.*invalid socket path" switcher.log
