@@ -80,8 +80,7 @@ func findAgentSocketSubdir(dir string) (net.Conn, error) {
 			continue
 		}
 
-		mode := fi.Sys().(*syscall.Stat_t).Mode
-		if (mode & syscall.S_IFSOCK) == 0 {
+		if fi.Mode()&os.ModeSocket == 0 {
 			log.Printf("Ignoring %s: not a socket\n", path)
 			continue
 		}
