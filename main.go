@@ -42,8 +42,19 @@ import (
 
 var (
 	socketPath = flag.String("socketPath", defaultSocketPath(), "path to the socket to listen on")
-	agentsDir  = flag.String("agentsDir", "/tmp", "directory where to look for running agents")
+	agentsDirs = flag.String("agentsDirs", defaultAgentsDirs(), "colon-separated list of directories where to look for running agents")
 )
+
+// defaultAgentsDirs computes the list of directories for the default value of the agentsDirs flag.
+func defaultAgentsDirs() string {
+	// OpenSSH 10.1 moved agent sockets from /tmp to the user's home directory and uses
+	// a different naming scheme (no subdirectories and different names).
+	home := os.Getenv("HOME")
+	if home == "" {
+		return "/tmp"
+	}
+	return fmt.Sprintf("%s/.ssh/agent:/tmp", home)
+}
 
 // defaultSocketPath computes the name of the default value for the socketPath flag.
 func defaultSocketPath() string {
@@ -55,8 +66,7 @@ func defaultSocketPath() string {
 }
 
 // findAgentSocketSubdir scans the contents of "dir", which should point to a session directory
-// createdy by sshd, looks for a valid "agent.*" socket, opens it, and returns the connection to
-// the agent.
+// created by sshd, looks for a valid socket, opens it, and returns the connection to the agent.
 //
 // This tries all possible files in search for a socket and only returns an error if no valid
 // and alive candidate can be found.
@@ -69,8 +79,10 @@ func findAgentSocketSubdir(dir string) (net.Conn, error) {
 	for _, entry := range entries {
 		path := filepath.Join(dir, entry.Name())
 
-		if !strings.HasPrefix(entry.Name(), "agent.") {
-			log.Printf("Ignoring %s: does not start with 'agent.'\n", path)
+		isPreOpenssh101Name := strings.HasPrefix(entry.Name(), "agent.")
+		isOpenssh101Name := strings.Contains(entry.Name(), ".sshd.")
+		if !isPreOpenssh101Name && !isOpenssh101Name {
+			log.Printf("Ignoring %s: does not start with 'agent.' or does not contain '.sshd.'\n", path)
 			continue
 		}
 
@@ -105,7 +117,7 @@ func findAgentSocketSubdir(dir string) (net.Conn, error) {
 //
 // This tries all possible directories in search for a socket and only returns an error if
 // no valid and alive candidate can be found.
-func findAgentSocket(dir string) (net.Conn, error) {
+func findAgentSocketInSharedDir(dir string) (net.Conn, error) {
 	// It is tempting to use the *at family of system calls to avoid races when checking for
 	// file metadata before opening the socket... but there is no guarantee that the sshd
 	// instance will be present at all even after we open the socket, so the races don't
@@ -156,6 +168,36 @@ func findAgentSocket(dir string) (net.Conn, error) {
 			continue
 		}
 		return agent, nil
+	}
+
+	return nil, errors.New("agent not found")
+}
+
+// findAgentSocketInMultipleLocations takes a colon-separated list of directories in dirs
+// and looks for a valid connection to an agent.
+//
+// This tries all possible directories in search for a socket and only returns an error if
+// no valid and alive candidate can be found.
+func findAgentSocketInMultipleLocations(dirsList string) (net.Conn, error) {
+	home := os.Getenv("HOME")
+
+	dirs := strings.Split(dirsList, ":")
+	for _, dir := range dirs {
+		// OpenSSH 10.1 moved agent sockets from /tmp to the user's home directory and uses
+		// a different naming scheme (no subdirectories and different names).
+		if home != "" {
+			if strings.HasPrefix(dir, home) {
+				conn, err := findAgentSocketSubdir(dir)
+				if err == nil {
+					return conn, nil
+				}
+			}
+		}
+
+		conn, err := findAgentSocketInSharedDir(dir)
+		if err == nil {
+			return conn, nil
+		}
 	}
 
 	return nil, errors.New("agent not found")
@@ -212,7 +254,7 @@ func handleConnection(client net.Conn) {
 	log.Printf("Accepted client connection")
 	defer client.Close()
 
-	agent, err := findAgentSocket(*agentsDir)
+	agent, err := findAgentSocketInMultipleLocations(*agentsDirs)
 	if err != nil {
 		log.Printf("Dropping connection: %v", err)
 		return

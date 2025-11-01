@@ -26,6 +26,9 @@ shtk_import unittest
 shtk_unittest_add_fixture standalone
 standalone_fixture() {
     setup() {
+        FAKE_HOME="$(mktemp -d -p /tmp)"
+        HOME="${FAKE_HOME}"; export HOME
+
         # Unix domain socket names have tight length limitations so we must place them under
         # /tmp (instead of the current work directory, which would be preferrable because then
         # we would get automatic cleanup).
@@ -36,6 +39,13 @@ standalone_fixture() {
         [ ! -e pid ] || kill "$(cat pid)"
 
         rm -rf "${SOCKETS_ROOT}"
+        rm -rf "${FAKE_HOME}"
+    }
+
+    shtk_unittest_add_test default_agents_dirs
+    default_agents_dirs_test() {
+        USER=fake-user ../ssh-agent-switcher_/ssh-agent-switcher -h  2>switcher.log
+        expect_file match:"default \"${FAKE_HOME}/.ssh/agent:/tmp\"" switcher.log
     }
 
     shtk_unittest_add_test default_socket_path
@@ -73,9 +83,12 @@ standalone_fixture() {
     }
 }
 
-shtk_unittest_add_fixture integration
-integration_fixture() {
+shtk_unittest_add_fixture integration_pre_openssh_10_1
+integration_pre_openssh_10_1_fixture() {
     setup() {
+        FAKE_HOME="$(mktemp -d -p /tmp)"
+        HOME="${FAKE_HOME}"; export HOME
+
         # Unix domain socket names have tight length limitations so we must place them under
         # /tmp (instead of the current work directory, which would be preferrable because then
         # we would get automatic cleanup).
@@ -91,7 +104,7 @@ integration_fixture() {
         SWITCHER_AUTH_SOCK="${SOCKETS_ROOT}/switcher"
         ../ssh-agent-switcher_/ssh-agent-switcher \
             --socketPath "${SWITCHER_AUTH_SOCK}" \
-            --agentsDir "${SOCKETS_ROOT}" \
+            --agentsDirs "${SOCKETS_ROOT}" \
             2>switcher.log &
         SWITCHER_AGENT_PID="${!}"
 
@@ -115,6 +128,7 @@ integration_fixture() {
         kill "${SSH_AGENT_PID}"
 
         rm -rf "${SOCKETS_ROOT}"
+        rm -rf "${FAKE_HOME}"
     }
 
     shtk_unittest_add_test list_identities
@@ -149,5 +163,82 @@ integration_fixture() {
         expect_file match:"Ignoring.*/ssh-empty.*no socket" switcher.log
         expect_file match:"Ignoring.*/ssh-foo/unknown.*start with.*agent" switcher.log
         expect_file match:"Ignoring.*/ssh-bar/agent.not-a-socket.*open failed" switcher.log
+    }
+}
+
+shtk_unittest_add_fixture integration_openssh_10_1
+integration_openssh_10_1_fixture() {
+    setup() {
+        FAKE_HOME="$(mktemp -d -p /tmp)"
+        HOME="${FAKE_HOME}"; export HOME
+
+        # Unix domain socket names have tight length limitations so we must place them under
+        # /tmp (instead of the current work directory, which would be preferrable because then
+        # we would get automatic cleanup).
+        SOCKETS_ROOT="${FAKE_HOME}/.ssh/agent"
+
+        # Name the agent socket in HOME so that it sorts last.  We need this for the unknown
+        # files test.
+        AGENT_AUTH_SOCK="${SOCKETS_ROOT}/zzz.sshd.aaa"
+
+        mkdir -p "$(dirname "${AGENT_AUTH_SOCK}")"
+        ssh-agent -a "${AGENT_AUTH_SOCK}" >agent.env
+
+        SWITCHER_AUTH_SOCK="${SOCKETS_ROOT}/switcher"
+        ../ssh-agent-switcher_/ssh-agent-switcher \
+            --socketPath "${SWITCHER_AUTH_SOCK}" \
+            --agentsDirs "/non-existent-1:${SOCKETS_ROOT}:/non-existent-2" \
+            2>switcher.log &
+        SWITCHER_AGENT_PID="${!}"
+
+        export SSH_AUTH_SOCK="${SWITCHER_AUTH_SOCK}"
+    }
+
+    teardown() {
+        # Check that the expected real agent was used.
+        expect_file match:"opened.*${AGENT_AUTH_SOCK}" switcher.log
+        # Check that we didn't leave an open connection behind due to EOF mishandling.
+        expect_file match:"Closing client connection" switcher.log
+
+        kill "${SWITCHER_AGENT_PID}"
+        # Make sure the daemon deletes the socket on exit.
+        while [ -e "${SWITCHER_AUTH_SOCK}" ]; do
+            sleep 0.01
+        done
+        expect_file match:"Shutting down.*${SWITCHER_AUTH_SOCK}" switcher.log
+
+        . agent.env
+        kill "${SSH_AGENT_PID}"
+
+        rm -rf "${SOCKETS_ROOT}"
+        rm -rf "${FAKE_HOME}"
+    }
+
+    shtk_unittest_add_test list_identities
+    list_identities_test() {
+        expect_command -s 1 -o match:"no identities" ssh-add -l
+    }
+
+    shtk_unittest_add_test add_identity
+    add_identity_test() {
+        assert_command -s 0 -o ignore -e ignore ssh-keygen -t rsa -b 1024 -N '' -f ./id_rsa
+        expect_command -s 0 -e match:"Identity added" ssh-add ./id_rsa
+    }
+
+    shtk_unittest_add_test ignore_unknown_files
+    ignore_unknown_files_test() {
+        # Create garbage in the sockets directory.
+        touch "${SOCKETS_ROOT}/file-unknown"
+        mkdir "${SOCKETS_ROOT}/dir-unknown"
+        touch "${SOCKETS_ROOT}/agent.not-a-socket"
+        touch "${SOCKETS_ROOT}/not-a-socket.sshd.foobar"
+
+        expect_command -s 1 -o match:"no identities" ssh-add -l
+
+        # Ensure that the garbage was ignored for the correct reasons.
+        expect_file match:"Ignoring.*/file-unknown.*not start with.*agent." switcher.log
+        expect_file match:"Ignoring.*/dir-unknown.*not start with.*agent." switcher.log
+        expect_file match:"Ignoring.*/agent.not-a-socket.*open failed" switcher.log
+        expect_file match:"Ignoring.*/not-a-socket.sshd.foobar.*open failed" switcher.log
     }
 }
