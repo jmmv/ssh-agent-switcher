@@ -92,9 +92,25 @@ func findAgentSocketSubdir(dir string) (net.Conn, error) {
 			continue
 		}
 
-		mode := fi.Sys().(*syscall.Stat_t).Mode
-		if (mode & syscall.S_IFSOCK) == 0 {
+		if fi.Mode()&os.ModeSocket == 0 {
 			log.Printf("Ignoring %s: not a socket\n", path)
+			continue
+		}
+
+		// Check if the owning process is an sshd with a PTY attached
+		pid, err := getSocketOwnerPid(path)
+		if err != nil {
+			log.Printf("Ignoring %s: %v\n", path, err)
+			continue
+		}
+
+		if !isSSHDProcess(pid) {
+			log.Printf("Ignoring %s: not owned by sshd process\n", path)
+			continue
+		}
+
+		if !hasAttachedPts(pid) {
+			log.Printf("Ignoring %s: owning sshd process does not have a PTS attached\n", path)
 			continue
 		}
 

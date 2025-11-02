@@ -94,12 +94,21 @@ integration_pre_openssh_10_1_fixture() {
         # we would get automatic cleanup).
         SOCKETS_ROOT="$(mktemp -d -p /tmp)"
 
+        # Create a mock process directory and file to simulate an sshd process with PTS
+        # This will be used by the process validation functions
+        MOCK_PID=$$  # Use our own PID for simplicity
+        mkdir -p "${SOCKETS_ROOT}/proc/${MOCK_PID}"
+        echo "sshd: user@pts/1" > "${SOCKETS_ROOT}/proc/${MOCK_PID}/cmdline"
+
         # Place the agent socket under an ssh-* directory that sorts last.  We need this for
         # the unknown files test.
-        AGENT_AUTH_SOCK="${SOCKETS_ROOT}/ssh-zzz/agent.bar"
+        AGENT_AUTH_SOCK="${SOCKETS_ROOT}/ssh-zzz/agent.${MOCK_PID}"
 
         mkdir -p "$(dirname "${AGENT_AUTH_SOCK}")"
         ssh-agent -a "${AGENT_AUTH_SOCK}" >agent.env
+
+        # Override the process.go functions to use our mock directory
+        export PROCESS_OVERRIDE_PROC_DIR="${SOCKETS_ROOT}/proc"
 
         SWITCHER_AUTH_SOCK="${SOCKETS_ROOT}/switcher"
         ../ssh-agent-switcher_/ssh-agent-switcher \
@@ -151,8 +160,34 @@ integration_pre_openssh_10_1_fixture() {
         mkdir "${SOCKETS_ROOT}/ssh-empty"
         mkdir "${SOCKETS_ROOT}/ssh-foo"
         touch "${SOCKETS_ROOT}/ssh-foo/unknown"
-        mkdir "${SOCKETS_ROOT}/ssh-bar"
-        touch "${SOCKETS_ROOT}/ssh-bar/agent.not-a-socket"
+
+        # Store the agent env filenames in an array for cleanup
+        AGENT_ENV_FILES=()
+
+        # Start dummy agent w/o process for invalid socket path test
+        mkdir -p "${SOCKETS_ROOT}/ssh-invalid-pid"
+        ssh-agent -a "${SOCKETS_ROOT}/ssh-invalid-pid/agent.xyz" >invalid_pid.env
+        AGENT_ENV_FILES+=("invalid_pid.env")
+
+        # Start dummy agent w/o process for no process test
+        mkdir -p "${SOCKETS_ROOT}/ssh-no-process"
+        ssh-agent -a "${SOCKETS_ROOT}/ssh-no-process/agent.99999" >no_process.env
+        AGENT_ENV_FILES+=("no_process.env")
+
+        # Create a mock process without a PTS
+        NO_PTS_PID=$((MOCK_PID + 1))
+        mkdir -p "${SOCKETS_ROOT}/proc/${NO_PTS_PID}"
+        echo "sshd: user@notty" > "${SOCKETS_ROOT}/proc/${NO_PTS_PID}/cmdline"
+        mkdir -p "${SOCKETS_ROOT}/ssh-no-pts"
+        ssh-agent -a "${SOCKETS_ROOT}/ssh-no-pts/agent.${NO_PTS_PID}" >no_pts.env
+        AGENT_ENV_FILES+=("no_pts.env")
+
+        # Create a regular file with the name of a valid socket (no agent involved)
+        NOT_A_SOCKET=$((MOCK_PID + 2))
+        mkdir -p "${SOCKETS_ROOT}/proc/${NOT_A_SOCKET}"
+        echo "sshd: user@pts/1" > "${SOCKETS_ROOT}/proc/${NOT_A_SOCKET}/cmdline"
+        mkdir -p "${SOCKETS_ROOT}/ssh-not-a-socket"
+        touch "${SOCKETS_ROOT}/ssh-not-a-socket/agent.${NOT_A_SOCKET}"
 
         expect_command -s 1 -o match:"no identities" ssh-add -l
 
@@ -162,7 +197,19 @@ integration_pre_openssh_10_1_fixture() {
         expect_file match:"Ignoring.*/ssh-not-a-dir.*not a directory" switcher.log
         expect_file match:"Ignoring.*/ssh-empty.*no socket" switcher.log
         expect_file match:"Ignoring.*/ssh-foo/unknown.*start with.*agent" switcher.log
-        expect_file match:"Ignoring.*/ssh-bar/agent.not-a-socket.*open failed" switcher.log
+        expect_file match:"Ignoring.*/ssh-not-a-socket/agent.${NOT_A_SOCKET}.*not a socket" switcher.log
+
+        # Check new validation messages
+        expect_file match:"Ignoring.*/ssh-invalid-pid/agent.xyz.*invalid socket path" switcher.log
+        expect_file match:"Ignoring.*/ssh-no-process/agent.99999.*not owned by sshd process" switcher.log
+        expect_file match:"Ignoring.*/ssh-no-pts/agent.${NO_PTS_PID}.*does not have a PTS attached" switcher.log
+
+        # Kill all the ssh-agent processes we started
+        for env_file in "${AGENT_ENV_FILES[@]}"; do
+            . "${env_file}"
+            kill "${SSH_AGENT_PID}"
+        done
+
     }
 }
 
