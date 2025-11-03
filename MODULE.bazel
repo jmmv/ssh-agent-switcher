@@ -3,5 +3,9 @@ module(
     version = "0.0.0",
 )
 
-bazel_dep(name = "rules_go", version = "0.39.1")
-bazel_dep(name = "rules_shtk", version = "1.7.0")
+bazel_dep(name = "rules_go", version = "0.58.3")
+
+bazel_dep(name = "rules_shtk", version = "1.7.1")
+fetch_shtk_dist = use_extension("@rules_shtk//:extensions.bzl", "fetch_shtk_dist")
+use_repo(fetch_shtk_dist, "shtk_dist_1_7")
+register_toolchains("@shtk_dist_1_7//:toolchain")
