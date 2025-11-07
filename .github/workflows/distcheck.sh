@@ -29,12 +29,27 @@
 
 set -eux
 
+err() {
+    echo "${0}: ${*}" 1>&2
+    exit 1
+}
+
+check_srcs() {
+    local makefile_srcs
+    makefile_srcs="$(grep '^SRCS = ' Makefile | cut -d ' ' -f 3-)"
+    [ -n "${makefile_srcs}" ] || err "Cannot determine SRCS from Makefile"
+
+    local actual_srcs
+    actual_srcs="$(echo $(find src -type f | sort))"
+
+    [ "${makefile_srcs}" = "${actual_srcs}" ] \
+        || err "Makefile SRCS seems to be out of date"
+}
+
 check_clean() {
     make clean
-    if [ -n "$(git clean -xdfn 2>&1)" ]; then
-        echo "make clean does not remove all files" 1>&2
-        return 1
-    fi
+    [ -z "$(git clean -xdfn 2>&1)" ] \
+        || err "make clean does not remove all files"
 }
 
 check_install() {
@@ -42,7 +57,15 @@ check_install() {
     trap "rm -rf '${root}'" EXIT
 
     make install PREFIX="${root}"
-    "${root}/bin/ssh-agent-switcher" -h 2>&1 | grep 'Usage of'
+    "${root}/bin/ssh-agent-switcher" -h 2>&1 | grep 'Usage: ssh-agent-switcher'
+    local debug_size="$(stat -c '%s' "${root}/bin/ssh-agent-switcher")"
+
+    make install MODE=release PREFIX="${root}"
+    "${root}/bin/ssh-agent-switcher" -h 2>&1 | grep 'Usage: ssh-agent-switcher'
+    local release_size="$(stat -c '%s' "${root}/bin/ssh-agent-switcher")"
+
+    [ "${release_size}" -lt "${debug_size}" ] \
+        || err "Release binary is larger than debug binary"
 }
 
 check_test() {
@@ -50,6 +73,7 @@ check_test() {
 }
 
 main() {
+    check_srcs
     check_test
     check_install
     check_clean

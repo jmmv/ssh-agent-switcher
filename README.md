@@ -25,11 +25,13 @@ real forwarded agent.
 
 ## Installation
 
-ssh-agent-switcher is written in Go and has no dependencies.  You can build it
-with the standard Go toolchain and then install it with:
+ssh-agent-switcher is written in Rust so you will need a standard Rust toolchain
+in place.  See [rustup.rs](https://rustup.rs/) for installation instructions.
+
+Then use `make` to build and install the binary in release mode:
 
 ```sh
-make install PREFIX="${HOME}/.local"
+make install MODE=release PREFIX="${HOME}/.local"
 ```
 
 ## Usage

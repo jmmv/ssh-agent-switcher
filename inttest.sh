@@ -23,6 +23,9 @@
 
 shtk_import unittest
 
+export RUST_LOG=trace
+SSH_AGENT_SWITCHER="../target/${MODE-debug}/ssh-agent-switcher"
+
 shtk_unittest_add_fixture standalone
 standalone_fixture() {
     setup() {
@@ -44,13 +47,13 @@ standalone_fixture() {
 
     shtk_unittest_add_test default_agents_dirs
     default_agents_dirs_test() {
-        USER=fake-user ../ssh-agent-switcher -h  2>switcher.log
-        expect_file match:"default \"${FAKE_HOME}/.ssh/agent:/tmp\"" switcher.log
+        USER=fake-user "${SSH_AGENT_SWITCHER}" -h >switcher.out 2>switcher.log
+        expect_file match:"default lookup.*${FAKE_HOME}/.ssh/agent:/tmp" switcher.out
     }
 
     shtk_unittest_add_test default_socket_path
     default_socket_path_test() {
-        USER=fake-user ../ssh-agent-switcher 2>switcher.log &
+        USER=fake-user "${SSH_AGENT_SWITCHER}" 2>switcher.log &
         echo "${!}" >pid  # For teardown.
 
         while [ ! -e /tmp/ssh-agent.fake-user ]; do
@@ -61,7 +64,7 @@ standalone_fixture() {
     shtk_unittest_add_test ignore_sighup
     ignore_sighup_test() {
         local socket="${SOCKETS_ROOT}/socket"
-        ../ssh-agent-switcher --socketPath "${socket}" 2>switcher.log &
+        "${SSH_AGENT_SWITCHER}" --socket-path "${socket}" 2>switcher.log &
         local pid="$!"
         echo "${pid}" >pid  # For teardown.
 
@@ -102,9 +105,9 @@ integration_pre_openssh_10_1_fixture() {
         ssh-agent -a "${AGENT_AUTH_SOCK}" >agent.env
 
         SWITCHER_AUTH_SOCK="${SOCKETS_ROOT}/switcher"
-        ../ssh-agent-switcher \
-            --socketPath "${SWITCHER_AUTH_SOCK}" \
-            --agentsDirs "${SOCKETS_ROOT}" \
+        "${SSH_AGENT_SWITCHER}" \
+            --socket-path "${SWITCHER_AUTH_SOCK}" \
+            --agents-dirs "${SOCKETS_ROOT}" \
             2>switcher.log &
         SWITCHER_AGENT_PID="${!}"
 
@@ -160,9 +163,9 @@ integration_pre_openssh_10_1_fixture() {
         expect_file match:"Ignoring.*/file-unknown.*not a directory" switcher.log
         expect_file match:"Ignoring.*/dir-unknown.*not start with.*ssh-" switcher.log
         expect_file match:"Ignoring.*/ssh-not-a-dir.*not a directory" switcher.log
-        expect_file match:"Ignoring.*/ssh-empty.*no socket" switcher.log
+        expect_file match:"Ignoring.*/ssh-empty.*No socket" switcher.log
         expect_file match:"Ignoring.*/ssh-foo/unknown.*start with.*agent" switcher.log
-        expect_file match:"Ignoring.*/ssh-bar/agent.not-a-socket.*open failed" switcher.log
+        expect_file match:"Ignoring.*/ssh-bar/agent.not-a-socket.*Cannot connect" switcher.log
     }
 }
 
@@ -185,9 +188,9 @@ integration_openssh_10_1_fixture() {
         ssh-agent -a "${AGENT_AUTH_SOCK}" >agent.env
 
         SWITCHER_AUTH_SOCK="${SOCKETS_ROOT}/switcher"
-        ../ssh-agent-switcher \
-            --socketPath "${SWITCHER_AUTH_SOCK}" \
-            --agentsDirs "/non-existent-1:${SOCKETS_ROOT}:/non-existent-2" \
+        "${SSH_AGENT_SWITCHER}" \
+            --socket-path "${SWITCHER_AUTH_SOCK}" \
+            --agents-dirs "/non-existent-1:${SOCKETS_ROOT}:/non-existent-2" \
             2>switcher.log &
         SWITCHER_AGENT_PID="${!}"
 
@@ -238,7 +241,7 @@ integration_openssh_10_1_fixture() {
         # Ensure that the garbage was ignored for the correct reasons.
         expect_file match:"Ignoring.*/file-unknown.*not start with.*agent." switcher.log
         expect_file match:"Ignoring.*/dir-unknown.*not start with.*agent." switcher.log
-        expect_file match:"Ignoring.*/agent.not-a-socket.*open failed" switcher.log
-        expect_file match:"Ignoring.*/not-a-socket.sshd.foobar.*open failed" switcher.log
+        expect_file match:"Ignoring.*/agent.not-a-socket.*Cannot connect" switcher.log
+        expect_file match:"Ignoring.*/not-a-socket.sshd.foobar.*Cannot connect" switcher.log
     }
 }
