@@ -29,17 +29,7 @@ ssh-agent-switcher is written in Go and has no dependencies.  You can build it
 with the standard Go toolchain and then install it with:
 
 ```sh
-go build
-mkdir -p ~/.local/bin/
-cp ssh-agent-switcher ~/.local/bin/
-```
-
-Or you can use Bazel:
-
-```sh
-bazel build -c opt //:ssh-agent-switcher
-mkdir -p ~/.local/bin/
-cp bazel-bin/ssh-agent-switcher_/ssh-agent-switcher ~/.local/bin/
+make install PREFIX="${HOME}/.local"
 ```
 
 ## Usage

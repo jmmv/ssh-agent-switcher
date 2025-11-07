@@ -1,4 +1,4 @@
-# Copyright 2023 Julio Merino
+# Copyright 2025 Julio Merino
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -26,6 +26,25 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-load("@rules_shtk//:repositories.bzl", "shtk_dist")
+PREFIX = /usr/local
 
-shtk_dist()
+all: ssh-agent-switcher
+
+ssh-agent-switcher: go.mod main.go
+	go build $@
+
+.PHONY: test
+test: ssh-agent-switcher inttest
+	./inttest
+
+.PHONY: install
+install: ssh-agent-switcher
+	install -m 755 -d "${PREFIX}/bin"
+	install -m 755 ./ssh-agent-switcher "${PREFIX}/bin/ssh-agent-switcher"
+
+inttest: inttest.sh
+	shtk build -m shtk_unittest_main -o $@ inttest.sh
+
+.PHONY: clean
+clean:
+	rm -f ssh-agent-switcher inttest

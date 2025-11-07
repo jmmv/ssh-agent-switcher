@@ -44,13 +44,13 @@ standalone_fixture() {
 
     shtk_unittest_add_test default_agents_dirs
     default_agents_dirs_test() {
-        USER=fake-user ../ssh-agent-switcher_/ssh-agent-switcher -h  2>switcher.log
+        USER=fake-user ../ssh-agent-switcher -h  2>switcher.log
         expect_file match:"default \"${FAKE_HOME}/.ssh/agent:/tmp\"" switcher.log
     }
 
     shtk_unittest_add_test default_socket_path
     default_socket_path_test() {
-        USER=fake-user ../ssh-agent-switcher_/ssh-agent-switcher 2>switcher.log &
+        USER=fake-user ../ssh-agent-switcher 2>switcher.log &
         echo "${!}" >pid  # For teardown.
 
         while [ ! -e /tmp/ssh-agent.fake-user ]; do
@@ -61,7 +61,7 @@ standalone_fixture() {
     shtk_unittest_add_test ignore_sighup
     ignore_sighup_test() {
         local socket="${SOCKETS_ROOT}/socket"
-        ../ssh-agent-switcher_/ssh-agent-switcher --socketPath "${socket}" 2>switcher.log &
+        ../ssh-agent-switcher --socketPath "${socket}" 2>switcher.log &
         local pid="$!"
         echo "${pid}" >pid  # For teardown.
 
@@ -102,7 +102,7 @@ integration_pre_openssh_10_1_fixture() {
         ssh-agent -a "${AGENT_AUTH_SOCK}" >agent.env
 
         SWITCHER_AUTH_SOCK="${SOCKETS_ROOT}/switcher"
-        ../ssh-agent-switcher_/ssh-agent-switcher \
+        ../ssh-agent-switcher \
             --socketPath "${SWITCHER_AUTH_SOCK}" \
             --agentsDirs "${SOCKETS_ROOT}" \
             2>switcher.log &
@@ -124,7 +124,7 @@ integration_pre_openssh_10_1_fixture() {
         done
         expect_file match:"Shutting down.*${SWITCHER_AUTH_SOCK}" switcher.log
 
-        . agent.env
+        . ./agent.env
         kill "${SSH_AGENT_PID}"
 
         rm -rf "${SOCKETS_ROOT}"
@@ -185,7 +185,7 @@ integration_openssh_10_1_fixture() {
         ssh-agent -a "${AGENT_AUTH_SOCK}" >agent.env
 
         SWITCHER_AUTH_SOCK="${SOCKETS_ROOT}/switcher"
-        ../ssh-agent-switcher_/ssh-agent-switcher \
+        ../ssh-agent-switcher \
             --socketPath "${SWITCHER_AUTH_SOCK}" \
             --agentsDirs "/non-existent-1:${SOCKETS_ROOT}:/non-existent-2" \
             2>switcher.log &
@@ -207,7 +207,7 @@ integration_openssh_10_1_fixture() {
         done
         expect_file match:"Shutting down.*${SWITCHER_AUTH_SOCK}" switcher.log
 
-        . agent.env
+        . ./agent.env
         kill "${SSH_AGENT_PID}"
 
         rm -rf "${SOCKETS_ROOT}"

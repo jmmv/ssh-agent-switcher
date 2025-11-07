@@ -1,7 +1,0 @@
-module(
-    name = "ssh_agent_switcher",
-    version = "0.0.0",
-)
-
-bazel_dep(name = "rules_go", version = "0.39.1")
-bazel_dep(name = "rules_shtk", version = "1.7.0")
