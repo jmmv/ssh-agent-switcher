@@ -27,24 +27,32 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 PREFIX = /usr/local
+MODE = debug
 
-all: ssh-agent-switcher
+SRCS = src/find.rs src/lib.rs src/main.rs src/proxy.rs
+BIN = target/$(MODE)/ssh-agent-switcher
 
-ssh-agent-switcher: go.mod main.go
-	go build $@
+.PHONY: all
+all: $(BIN)
+
+$(BIN): $(SRCS)
+	@if [ "$(MODE)" = debug ]; then arg=; else arg=--$(MODE); fi; \
+	    echo cargo build $${arg}; \
+	    cargo build $${arg}
 
 .PHONY: test
-test: ssh-agent-switcher inttest
-	./inttest
-
-.PHONY: install
-install: ssh-agent-switcher
-	install -m 755 -d "${PREFIX}/bin"
-	install -m 755 ./ssh-agent-switcher "${PREFIX}/bin/ssh-agent-switcher"
+test: $(BIN) inttest
+	MODE=$(MODE) ./inttest
 
 inttest: inttest.sh
 	shtk build -m shtk_unittest_main -o $@ inttest.sh
 
+.PHONY: install
+install: $(BIN)
+	install -m 755 -d "$(DESTDIR)$(PREFIX)/bin"
+	install -m 755 "$(BIN)" "$(DESTDIR)$(PREFIX)/bin/ssh-agent-switcher"
+
 .PHONY: clean
 clean:
-	rm -f ssh-agent-switcher inttest
+	cargo clean
+	rm -f Cargo.lock inttest
