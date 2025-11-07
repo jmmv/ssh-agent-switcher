@@ -1,15 +1,20 @@
 repos:
--   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.4.0
-    hooks:
-    -   id: check-case-conflict
-    -   id: check-executables-have-shebangs
-    -   id: check-merge-conflict
-    -   id: check-yaml
-    -   id: detect-private-key
-    -   id: end-of-file-fixer
-    -   id: trailing-whitespace
--   repo: https://github.com/jlebar/pre-commit-hooks.git
-    rev: 62ca83ba4958da48ea44d9f24cd0aa58633376c7
-    hooks:
-    -   id: do-not-submit
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+    - id: check-case-conflict
+    - id: check-executables-have-shebangs
+    - id: check-merge-conflict
+    - id: check-shebang-scripts-are-executable
+    - id: check-yaml
+    - id: detect-private-key
+    - id: double-quote-string-fixer
+    - id: end-of-file-fixer
+    - id: trailing-whitespace
+- repo: local
+  hooks:
+    - id: do-not-submit
+      name: "DO NOT SUBMIT check"
+      entry: bash -c 'if [ $# -gt 0 ]; then ! grep "DO NOT SUBMIT" "$@"; fi'
+      language: system
+      exclude: .pre-commit-config.yaml
