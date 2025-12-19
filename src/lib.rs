@@ -27,8 +27,8 @@ use log::{debug, info, warn};
 use signal_hook::{consts::SIGHUP, consts::TERM_SIGNALS, iterator::Signals};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use std::{env, fs, io};
@@ -36,24 +36,8 @@ use std::{env, fs, io};
 mod find;
 mod proxy;
 
-/// Error type for this crate.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Error while trying to find the proxied SSH agent socket.
-    #[error("{0}")]
-    FindError(String),
-
-    /// Error while proxying the SSH agent request.
-    #[error("{0}")]
-    ProxyError(String),
-
-    /// Error during program setup or teardown.
-    #[error("{0}")]
-    SetupError(String),
-}
-
 /// Result type for this crate.
-type Result<T> = std::result::Result<T, Error>;
+type Result<T> = std::result::Result<T, String>;
 
 /// A scope guard to restore the previous umask.
 struct UmaskGuard {
@@ -78,9 +62,8 @@ fn set_umask(umask: libc::mode_t) -> UmaskGuard {
 fn setup_signals(socket_path: &Path, stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
     let mut sigs = vec![SIGHUP];
     sigs.extend(TERM_SIGNALS);
-    let mut signals = Signals::new(&sigs).map_err(|e| {
-        Error::SetupError(format!("Cannot set up termination signal handlers: {}", e))
-    })?;
+    let mut signals = Signals::new(&sigs)
+        .map_err(|e| format!("Cannot set up termination signal handlers: {}", e))?;
 
     let handle = {
         let socket_path = socket_path.to_owned();
@@ -113,9 +96,8 @@ fn create_listener(socket_path: &Path) -> Result<UnixListener> {
     // indirectly to other users.
     let _guard = set_umask(0o177);
 
-    UnixListener::bind(socket_path).map_err(|e| {
-        Error::SetupError(format!("Cannot listen on {}: {}", socket_path.display(), e))
-    })
+    UnixListener::bind(socket_path)
+        .map_err(|e| format!("Cannot listen on {}: {}", socket_path.display(), e))
 }
 
 /// Handles one incoming connection on `client`.
@@ -128,11 +110,10 @@ fn handle_connection(
     let mut agent = match find::find_socket(agents_dirs, home, uid) {
         Some(socket) => socket,
         None => {
-            return Err(Error::FindError("No agent found; cannot proxy request".to_owned()));
+            return Err("No agent found; cannot proxy request".to_owned());
         }
     };
-    let result = proxy::proxy_request(&mut client, &mut agent)
-        .map_err(|e| Error::ProxyError(format!("{}", e)));
+    let result = proxy::proxy_request(&mut client, &mut agent).map_err(|e| format!("{}", e));
     debug!("Closing client connection");
     result
 }
@@ -154,7 +135,7 @@ pub fn run(socket_path: PathBuf, agents_dirs: &[PathBuf]) -> Result<()> {
     // below.
     listener
         .set_nonblocking(true)
-        .map_err(|e| Error::SetupError(format!("Cannot set socket to non-blocking: {}", e)))?;
+        .map_err(|e| format!("Cannot set socket to non-blocking: {}", e))?;
 
     debug!("Entering main loop");
     while !stop.load(Ordering::Relaxed) {
@@ -176,5 +157,5 @@ pub fn run(socket_path: PathBuf, agents_dirs: &[PathBuf]) -> Result<()> {
     }
     debug!("Main loop exited");
 
-    handle.join().map_err(|_| Error::SetupError(format!("Failed to wait for signals")))
+    handle.join().map_err(|_| format!("Failed to wait for signals"))
 }

@@ -8,7 +8,6 @@ publish = false  # Not ready for release yet.
 libc = "0.2"
 log = "0.4"
 signal-hook = "0.3"
-thiserror = "2.0"
 
 [dependencies.getoptsargs]
 git = "https://github.com/jmmv/getoptsargs"
