@@ -24,22 +24,21 @@
 //! Utilities to find the correct SSH agent socket.
 
 use log::{debug, info, trace};
+use std::io::{ErrorKind, Result};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::{fs, path::PathBuf};
 
-use crate::{Error, Result};
-
 /// Syntactic sugar to instantiate an error.
 #[macro_export]
 macro_rules! error {
-    ( $text:expr ) => {
-        Error::FindError($text.to_owned())
+    ( $kind:expr, $text:expr ) => {
+        std::io::Error::new($kind, $text)
     };
 
-    ( $fmt:literal $(, $args:expr)+ ) => {
-        Error::FindError(format!($fmt $(, $args)+))
+    ( $kind:expr, $fmt:literal $(, $args:expr)+ ) => {
+        std::io::Error::new($kind, format!($fmt $(, $args)+))
     };
 }
 
@@ -50,25 +49,27 @@ fn try_open(path: &Path) -> Result<UnixStream> {
     );
     let name = match name.to_str() {
         Some(name) => name,
-        None => return Err(error!("Invalid socket path")),
+        None => return Err(error!(ErrorKind::InvalidInput, "Invalid socket path")),
     };
 
     let is_pre_openssh_10_1 = name.starts_with("agent.");
     let is_openssh_10_1 = name.contains(".sshd.");
     if !is_pre_openssh_10_1 && !is_openssh_10_1 {
         return Err(error!(
+            ErrorKind::InvalidInput,
             "Socket name in does not start with 'agent.' or does not contain '.sshd.'"
         ));
     }
 
-    let metadata = fs::metadata(&path).map_err(|e| error!("Failed to get metadata: {}", e))?;
+    let metadata =
+        fs::metadata(&path).map_err(|e| error!(e.kind(), "Failed to get metadata: {}", e))?;
 
     if (metadata.mode() & libc::S_IFSOCK as u32) == 0 {
-        return Err(error!("Path is not a socket"));
+        return Err(error!(ErrorKind::InvalidInput, "Path is not a socket"));
     }
 
-    let socket =
-        UnixStream::connect(&path).map_err(|e| error!("Cannot connect to socket: {}", e))?;
+    let socket = UnixStream::connect(&path)
+        .map_err(|e| error!(e.kind(), "Cannot connect to socket: {}", e))?;
 
     Ok(socket)
 }
@@ -135,17 +136,18 @@ fn try_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<UnixStream> {
             "The candidate path comes from joining a directory to one of its entries, so it must have a name");
     let name = match name.to_str() {
         Some(name) => name,
-        None => return Err(error!("Invalid file name")),
+        None => return Err(error!(ErrorKind::InvalidInput, "Invalid file name")),
     };
 
     if !name.starts_with("ssh-") {
-        return Err(error!("Basename does not start with 'ssh-'"));
+        return Err(error!(ErrorKind::InvalidInput, "Basename does not start with 'ssh-'"));
     }
 
-    let metadata = fs::metadata(&dir).map_err(|e| error!("Stat failed: {}", e))?;
+    let metadata = fs::metadata(&dir).map_err(|e| error!(e.kind(), "Stat failed: {}", e))?;
 
     if metadata.uid() != uid {
         return Err(error!(
+            ErrorKind::InvalidInput,
             "{} is owned by {}, not the current user {}",
             dir.display(),
             metadata.uid(),
@@ -155,7 +157,7 @@ fn try_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<UnixStream> {
 
     match find_in_subdir(dir) {
         Some(socket) => Ok(socket),
-        None => return Err(error!("No socket in subdirectory")),
+        None => return Err(error!(ErrorKind::NotFound, "No socket in subdirectory")),
     }
 }
 
