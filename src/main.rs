@@ -108,6 +108,8 @@ fn app_main(matches: Matches) -> Result<i32> {
     let socket_path = get_socket_path(&matches)?;
     let agents_dirs = get_agents_dirs(&matches)?;
 
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
     match ssh_agent_switcher::run(socket_path, &agents_dirs) {
         Ok(()) => Ok(0),
         Err(e) => {
