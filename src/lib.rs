@@ -25,13 +25,14 @@
 
 use log::{debug, info, warn};
 use signal_hook::{consts::SIGHUP, consts::TERM_SIGNALS, iterator::Signals};
+use std::io;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use std::{env, fs, io};
+use std::{env, fs};
 
 mod find;
 mod proxy;
@@ -58,29 +59,37 @@ fn set_umask(umask: libc::mode_t) -> UmaskGuard {
 /// Installs global signal handlers for termination signals.
 ///
 /// Returns a thread that blocks until any of the signals is received and immediately deletes
-/// `socket_path` before returning.
-fn setup_signals(socket_path: &Path, stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
+/// `cleanup_files` before returning.
+fn setup_signals(cleanup_files: &[&Path], stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
     let mut sigs = vec![SIGHUP];
     sigs.extend(TERM_SIGNALS);
     let mut signals = Signals::new(&sigs)
         .map_err(|e| format!("Cannot set up termination signal handlers: {}", e))?;
 
     let handle = {
-        let socket_path = socket_path.to_owned();
+        let cleanup_files =
+            cleanup_files.into_iter().map(|p| (*p).to_owned()).collect::<Vec<PathBuf>>();
         thread::spawn(move || {
             for sig in signals.forever() {
                 if TERM_SIGNALS.contains(&sig) {
                     info!(
-                        "Shutting down due to signal {:?} and deleting {}",
+                        "Shutting down due to signal {:?} and removing {}",
                         sig,
-                        socket_path.display()
+                        cleanup_files
+                            .iter()
+                            .map(|p| (*p).display().to_string())
+                            .collect::<Vec<String>>()
+                            .join(", ")
                     );
                     break;
                 }
                 debug!("Ignoring signal {:?}", sig);
             }
 
-            let _ = fs::remove_file(socket_path);
+            for file in cleanup_files {
+                let _ = fs::remove_file(file);
+            }
+
             stop.store(true, Ordering::Relaxed);
         })
     };
@@ -119,14 +128,24 @@ fn handle_connection(
 }
 
 /// Runs the core logic of the app.
-pub fn run(socket_path: PathBuf, agents_dirs: &[PathBuf]) -> Result<()> {
+///
+/// This serves the SSH agent socket on `socket_path` and looks for sshd sockets in `agents_dirs`.
+///
+/// The `pid_file` needs to be passed in for cleanup purposes.
+pub fn run(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<()> {
     let home = env::var("HOME").map(|v| Some(PathBuf::from(v))).unwrap_or(None);
     let uid = unsafe { libc::getuid() };
 
     // Install signal handlers before we create the socket so that we don't leave it behind in any
     // case.
     let stop = Arc::from(AtomicBool::new(false));
-    let handle = setup_signals(&socket_path, stop.clone())?;
+    let cleanup_files = [
+        socket_path.as_path(),
+        // Because we catch signals, daemonize doesn't properly clean up the PID file so we have.
+        // to do it ourselves.
+        pid_file.as_path(),
+    ];
+    let handle = setup_signals(cleanup_files.as_slice(), stop.clone())?;
 
     let listener = create_listener(&socket_path)?;
 
@@ -158,4 +177,27 @@ pub fn run(socket_path: PathBuf, agents_dirs: &[PathBuf]) -> Result<()> {
     debug!("Main loop exited");
 
     handle.join().map_err(|_| format!("Failed to wait for signals"))
+}
+
+/// Waits for `path` to exist for a maximum period of time using operation `op`.
+/// Returns the result of `op` on success.
+pub fn wait_for_file<P: AsRef<Path> + Copy, T>(
+    path: P,
+    mut pending_wait: Duration,
+    op: fn(P) -> io::Result<T>,
+) -> Result<T> {
+    while pending_wait > Duration::ZERO {
+        match op(path) {
+            Ok(result) => {
+                return Ok(result);
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                pending_wait -= Duration::from_millis(1);
+            }
+            Err(e) => {
+                return Err(e.to_string());
+            }
+        }
+    }
+    Err("File was not created on time".to_owned())
 }

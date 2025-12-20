@@ -23,9 +23,17 @@
 
 //! Serves a Unix domain socket that proxies connections to any valid SSH agent provided by sshd.
 
+use daemonize::{Daemonize, Outcome};
 use getoptsargs::prelude::*;
+use log::info;
+use std::fs::{self, File};
 use std::path::PathBuf;
+use std::time::Duration;
 use std::{env, io};
+use xdg::BaseDirectories;
+
+/// Maximum amount of time to wait for the child process to start when daemonization is enabled.
+const MAX_CHILD_WAIT: Duration = Duration::from_secs(10);
 
 /// Checks if the required `name` variable is present and returns its value.
 fn get_required_env_var(name: &str) -> Result<String> {
@@ -50,6 +58,44 @@ fn get_agents_dirs(matches: &Matches) -> Result<Vec<PathBuf>> {
     }
 
     default_agents_dirs()
+}
+
+/// Returns the default value of the `--log-file` flag.
+fn default_log_file(xdg_dirs: &BaseDirectories) -> Result<PathBuf> {
+    xdg_dirs
+        .place_state_file("ssh-agent-switcher.log")
+        .map_err(|e| anyhow!("Cannot create XDG_STATE_HOME: {}", e))
+}
+
+/// Gets the value of the `--log-file` flag, computing a default if necessary.
+fn get_log_file(matches: &Matches, xdg_dirs: &BaseDirectories) -> Result<PathBuf> {
+    match matches.opt_str("log-file") {
+        Some(s) => Ok(PathBuf::from(s)),
+        None => default_log_file(xdg_dirs),
+    }
+}
+
+/// Returns the default value of the `--pid-file` flag.
+fn default_pid_file(xdg_dirs: &BaseDirectories) -> Result<PathBuf> {
+    match xdg_dirs.place_runtime_file("ssh-agent-switcher.pid") {
+        Ok(path) => Ok(path),
+        Err(_) => {
+            // XDG_RUNTIME_DIR *must* be set, but it's quite annoying to fail when it's not.
+            // The variable being missing is the default case for FreeBSD, so make this more
+            // friendly in that case.
+            xdg_dirs
+                .place_state_file("ssh-agent-switcher.pid")
+                .map_err(|e| anyhow!("Cannot create XDG_RUNTIME_DIR: {}", e))
+        }
+    }
+}
+
+/// Gets the value of the `--pid-file` flag, computing a default if necessary.
+fn get_pid_file(matches: &Matches, xdg_dirs: &BaseDirectories) -> Result<PathBuf> {
+    match matches.opt_str("pid-file") {
+        Some(s) => Ok(PathBuf::from(s)),
+        None => default_pid_file(xdg_dirs),
+    }
 }
 
 /// Returns the default value of the `--socket-path` flag.
@@ -79,6 +125,7 @@ fn app_extra_help(output: &mut dyn io::Write) -> io::Result<()> {
                 .join(":")
         )?;
     }
+
     if let Ok(socket_path) = default_socket_path() {
         writeln!(
             output,
@@ -86,6 +133,15 @@ fn app_extra_help(output: &mut dyn io::Write) -> io::Result<()> {
             socket_path.display()
         )?;
     }
+
+    let xdg_dirs = BaseDirectories::new();
+    if let Ok(log_file) = default_log_file(&xdg_dirs) {
+        writeln!(output, "If --log-file is not set, the default path is {}", log_file.display())?;
+    }
+    if let Ok(pid_file) = default_pid_file(&xdg_dirs) {
+        writeln!(output, "If --pid-file is not set, the default path is {}", pid_file.display())?;
+    }
+
     Ok(())
 }
 
@@ -101,21 +157,71 @@ fn app_setup(builder: Builder) -> Builder {
             "colon-separated list of directories where to look for running agents",
             "dir1:..:dirn",
         )
+        .optflag("", "daemon", "run in the background")
+        .optopt("", "log-file", "path to the file where to write logs", "path")
+        .optopt("", "pid-file", "path to the PID file to create", "path")
         .optopt("", "socket-path", "path to the socket to listen on", "path")
 }
 
+fn daemon_parent(socket_path: PathBuf, log_file: PathBuf, pid_file: PathBuf) -> Result<i32> {
+    info!("Log file: {}", log_file.display());
+    info!("PID file: {}", pid_file.display());
+    let pid_content =
+        ssh_agent_switcher::wait_for_file(&pid_file, MAX_CHILD_WAIT, fs::read_to_string)
+            .map_err(|e| anyhow!("Daemon failed to start on time: {}", e))?;
+    info!("PID is: {}", pid_content.trim());
+    let _ = ssh_agent_switcher::wait_for_file(&socket_path, MAX_CHILD_WAIT, fs::metadata)
+        .map_err(|e| anyhow!("Daemon failed to start on time: {}", e))?;
+    Ok(0)
+}
+
+fn daemon_child(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<i32> {
+    if let Err(e) = ssh_agent_switcher::run(socket_path, &agents_dirs, pid_file) {
+        bail!("{}", e);
+    }
+    Ok(0)
+}
+
 fn app_main(matches: Matches) -> Result<i32> {
-    let socket_path = get_socket_path(&matches)?;
+    let xdg_dirs = BaseDirectories::new();
+
     let agents_dirs = get_agents_dirs(&matches)?;
+    let log_file = get_log_file(&matches, &xdg_dirs)?;
+    let pid_file = get_pid_file(&matches, &xdg_dirs)?;
+    let socket_path = get_socket_path(&matches)?;
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    let mut logger_builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    if matches.opt_present("daemon") {
+        let log =
+            File::options().append(true).create(true).open(&log_file).map_err(|e| {
+                anyhow!("Failed to open/create log file {}: {}", log_file.display(), e)
+            })?;
 
-    match ssh_agent_switcher::run(socket_path, &agents_dirs) {
-        Ok(()) => Ok(0),
-        Err(e) => {
-            eprintln!("ERROR: {}", e);
-            Ok(1)
+        match Daemonize::new().pid_file(&pid_file).stderr(log).execute() {
+            Outcome::Parent(Ok(_parent)) => {
+                logger_builder.init();
+                daemon_parent(socket_path, log_file, pid_file)
+            }
+            Outcome::Parent(Err(e)) => {
+                bail!("Failed to become daemon: {}", e);
+            }
+            Outcome::Child(Ok(_child)) => {
+                logger_builder.init();
+                daemon_child(socket_path, &agents_dirs, pid_file)
+            }
+            Outcome::Child(Err(e)) => {
+                let msg = e.to_string();
+                if !msg.contains("unable to lock pid file") {
+                    bail!("Failed to become daemon: {}", e);
+                }
+                Ok(0) // Already running.
+            }
         }
+    } else {
+        logger_builder.init();
+        info!("Running in the foreground: ignoring --log-file and --pid-file");
+        daemon_child(socket_path, &agents_dirs, pid_file)
     }
 }
 
