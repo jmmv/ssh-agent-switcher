@@ -245,3 +245,117 @@ integration_openssh_10_1_fixture() {
         expect_file match:"Ignoring.*/not-a-socket.sshd.foobar.*Cannot connect" switcher.log
     }
 }
+
+shtk_unittest_add_fixture daemonize
+daemonize_fixture() {
+    setup() {
+        FAKE_HOME="$(mktemp -d -p /tmp)"
+        HOME="${FAKE_HOME}"; export HOME
+
+        # Unix domain socket names have tight length limitations so we must place them under
+        # /tmp (instead of the current work directory, which would be preferrable because then
+        # we would get automatic cleanup).
+        SOCKETS_ROOT="$(mktemp -d -p /tmp)"
+    }
+
+    teardown() {
+        [ ! -e pid ] || kill "$(cat pid)"
+
+        rm -rf "${SOCKETS_ROOT}"
+        rm -rf "${FAKE_HOME}"
+    }
+
+    do_simple_test() {
+        local log_file="${1}"; shift
+        local pid_file="${1}"; shift
+
+        # We don't wait for the PID file nor the socket to be created because the parent process
+        # in the daemonization startup guarantees they exist.
+        cp "${pid_file}" pid  # For teardown.
+
+        kill "$(cat "${pid_file}")"
+
+        # Wait for the PID file to disappear.
+        while [ -e "${pid_file}" ]; do
+            sleep 0.01
+        done
+
+        cp "${log_file}" switcher.log  # For teardown.
+    }
+
+    shtk_unittest_add_test xdg_dirs
+    xdg_dirs_test() {
+        local log_dir="$(pwd)/test-state"
+        local log_file="${log_dir}/ssh-agent-switcher.log"
+
+        local pid_dir="$(pwd)/test-runtime"
+        local pid_file="${pid_dir}/ssh-agent-switcher.pid"
+        mkdir -p "${pid_dir}"  # XDG expects the directory to exist.
+        chmod 0700 "${pid_dir}"  # XDG expects tight permissions.
+
+        local socket="${SOCKETS_ROOT}/socket"
+        XDG_STATE_HOME="${log_dir}" XDG_RUNTIME_DIR="${pid_dir}" \
+            "${SSH_AGENT_SWITCHER}" --daemon --socket-path "${socket}"
+
+        do_simple_test "${log_file}" "${pid_file}"
+    }
+
+    shtk_unittest_add_test xdg_runtime_dir_not_set
+    xdg_runtime_dir_not_set_test() {
+        local log_dir="$(pwd)/test-state"
+        local log_file="${log_dir}/ssh-agent-switcher.log"
+
+        local pid_dir="${log_dir}"  # Default fallback if XDG_RUNTIME_DIR is not set.
+        local pid_file="${pid_dir}/ssh-agent-switcher.pid"
+        mkdir -p "${pid_dir}"  # XDG expects the directory to exist.
+        chmod 0700 "${pid_dir}"  # XDG expects tight permissions.
+
+        local socket="${SOCKETS_ROOT}/socket"
+        (
+            unset XDG_RUNTIME_DIR
+            XDG_STATE_HOME="${log_dir}" \
+                "${SSH_AGENT_SWITCHER}" --daemon --socket-path "${socket}"
+        )
+
+        do_simple_test "${log_file}" "${pid_file}"
+    }
+
+    shtk_unittest_add_test explicit_files
+    explicit_files_test() {
+        local log_file="$(pwd)/test.log"
+        local pid_file="$(pwd)/test.pid"
+
+        local socket="${SOCKETS_ROOT}/socket"
+        "${SSH_AGENT_SWITCHER}" --daemon --log-file="${log_file}" --pid-file="${pid_file}" \
+            --socket-path "${socket}"
+
+        do_simple_test "${log_file}" "${pid_file}"
+    }
+
+    shtk_unittest_add_test double_start
+    double_start_test() {
+        local log_file="$(pwd)/test.log"
+        local pid_file="$(pwd)/test.pid"
+
+        local socket="${SOCKETS_ROOT}/socket"
+        "${SSH_AGENT_SWITCHER}" --daemon --log-file="${log_file}" --pid-file="${pid_file}" \
+            --socket-path "${socket}"
+
+        # This second invocation should not actually start.
+        "${SSH_AGENT_SWITCHER}" --daemon --log-file="${log_file}" --pid-file="${pid_file}" \
+            --socket-path "${socket}.2"
+
+        # Wait a little bit to see if the second socket is created.  This is racy and may fail
+        # to detect a legitimate bug, but it should not raise a false failure.
+        local i=0
+        while [ "${i}" -lt 10 ]; do
+            if [ -e "${socket}.2" ]; then
+                fail "Second daemon should not have started"
+            fi
+            sleep 0.01
+            i=$((i + 1))
+        done
+
+        do_simple_test "${log_file}" "${pid_file}"
+    }
+}

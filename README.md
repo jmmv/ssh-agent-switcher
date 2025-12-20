@@ -40,24 +40,14 @@ Extend your login script (typically `~/.login`, `~/.bash_login`, or `~/.zlogin`)
 with the following snippet:
 
 ```sh
-if [ ! -e "/tmp/ssh-agent.${USER}" ]; then
-    if [ -n "${ZSH_VERSION}" ]; then
-        eval ~/.local/bin/ssh-agent-switcher 2>/dev/null "&!"
-    else
-        ~/.local/bin/ssh-agent-switcher 2>/dev/null &
-        disown 2>/dev/null || true
-    fi
-fi
+~/.local/bin/ssh-agent-switcher --daemon 2>/dev/null || true
 export SSH_AUTH_SOCK="/tmp/ssh-agent.${USER}"
 ```
 
 For `fish`, extend `~/.config/fish/config.fish` with the following:
 
 ```sh
-if not test -e "/tmp/ssh-agent.$USER"
-    ~/.local/bin/ssh-agent-switcher &> /dev/null &
-    disown &> /dev/null || true
-end
+~/.local/bin/ssh-agent-switcher --daemon &>/dev/null || true
 set -gx SSH_AUTH_SOCK "/tmp/ssh-agent.$USER"
 ```
 
