@@ -29,8 +29,9 @@
 PREFIX = /usr/local
 MODE = debug
 
-SRCS = src/find.rs src/lib.rs src/main.rs src/proxy.rs
 BIN = target/$(MODE)/ssh-agent-switcher
+RS_SRCS = src/find.rs src/lib.rs src/main.rs src/proxy.rs
+SRCS = Cargo.toml $(RS_SRCS)
 
 .PHONY: all
 all: $(BIN)
