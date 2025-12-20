@@ -1,0 +1,220 @@
+.\" Copyright 2025 Julio Merino
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions are
+.\" met:
+.\"
+.\" * Redistributions of source code must retain the above copyright
+.\"   notice, this list of conditions and the following disclaimer.
+.\" * Redistributions in binary form must reproduce the above copyright
+.\"   notice, this list of conditions and the following disclaimer in the
+.\"   documentation and/or other materials provided with the distribution.
+.\" * Neither the name of ssh-agent-switcher nor the names of its
+.\"   contributors may be used to endorse or promote products derived from
+.\"   this software without specific prior written permission.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+.\" "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+.\" LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+.\" A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+.\" OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+.\" SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+.\" LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+.\" DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+.\" THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+.\" (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+.\" OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+.Dd December 20, 2025
+.Dt SSH-AGENT-SWITCHER 1
+.Os
+.Sh NAME
+.Nm ssh-agent-switcher
+.Nd Proxies SSH agent connections to any valid forwarded agent provided by sshd
+.Sh SYNOPSIS
+.Nm
+.Op Fl -agents-dirs Ar dir1:..dirN
+.Op Fl -socket-path Ar path
+.Nm
+.Fl -daemon
+.Op Fl -agents-dirs Ar dir1:..dirN
+.Op Fl -log-file Ar path
+.Op Fl -pid-file Ar path
+.Op Fl -socket-path Ar path
+.Nm
+.Fl -help
+.Nm
+.Fl -version
+.Sh DESCRIPTION
+.Nm
+is a daemon that proxies SSH agent connections to any valid forwarded agent
+provided by sshd.
+This allows long-lived processes such as terminal multiplexers like
+.Xr tmux 1
+or
+.Xr screen 1
+to access the connection-specific forwarded agents.
+.Pp
+More specifically, this program can be used to fix the problem that arises in
+the following sequence of events:
+.Pp
+.Bl -enum -compact -offset XXXX
+.It
+Connect to an SSH server with SSH agent forwarding.
+.It
+Start a tmux session in the SSH server.
+.It
+Detach the tmux session.
+.It
+Log out of the SSH server.
+.It
+Reconnect to the SSH server with SSH agent forwarding.
+.It
+Attach to the existing tmux session.
+.It
+Run an SSH command.
+.It
+See the command fail to communicate with the forwarded agent.
+.El
+.Pp
+The
+.Nm
+daemon solves this problem by exposing an SSH agent socket at a well-known
+location, allowing you to set
+.Va SSH_AUTH_SOCK
+to a path that does
+.Em not
+change across different connections.
+The daemon then looks for a valid socket every time it receives a request and
+forwards the request to the real forwarded agent.
+.Pp
+In the first usage form,
+.Nm
+runs in the foreground, printing a log to stderr.
+You are responsible for only starting the program once, capturing the log, and
+putting the program in the background in a way that does not get auto-terminated
+on login shell exit.
+This is the default for historical reasons.
+.Pp
+In the second usage form enabled by the
+.Fl -daemon
+flag,
+.Nm
+starts as a background daemon only if it is not yet running and automatically
+detaches from the controlling terminal.
+This is the preferred usage form as you do not have to worry about checking if
+the daemon is already running.
+.Pp
+In the third usage form enabled by the
+.Fl -help
+flag,
+.Nm
+prints usage information to stdout.
+Of special interest are the default values of various flags, as these are
+computed at runtime based on the environment.
+.Pp
+In the fourth usage form enabled by the
+.Fl -version
+flag,
+.Nm
+prints version information to stdout and exits.
+.Pp
+The following flags are recognized:
+.Bl -tag
+.It Fl -agents-dirs Ar dir1..dirN
+Colon-separated list of directories that may contain sshd-provided agent
+sockets.
+The default value recognizes sockets creatd by OpenSSH before and after the
+naming scheme change that happened with the OpenSSH 10.1 release.
+.It Fl -daemon
+Enable daemon mode.
+You should always use this flag.
+.It Fl -help
+Show interactive help on stdout and exit.
+.It Fl -log-file Ar path
+Specifies the location of the log file to create or to append to when running
+in daemon mode.
+.It Fl -pid-file Ar path
+Specifies the location of the PID file to create when running in daemon mode.
+This is used as a lock to determine if the daemon should start again or not.
+.It Fl -socket-path Ar path
+Location where to create the listening agent socket.
+Defaults to
+.Pa /tmp/ssh-agent.${USER}
+and you should rarely change this.
+.It Fl -version
+Show version information on stdout and exit.
+.El
+.Sh EXAMPLES
+The common mechanism to start
+.Nm
+is by hooking its startup in your user's login shell scripts (typically
+.Pa ~/.login ,
+.Pa ~/.bash_login
+or
+.Pa ~/.zlogin ) .
+.Pp
+Add the following snippet to these scripts:
+.Bd -literal -offset indent
+ssh-agent-switcher --daemon 2>/dev/null || true
+export SSH_AUTH_SOCK="/tmp/ssh-agent.${USER}"
+.Ed
+.Pp
+As shown above, you should silence the stderr of the program to avoid getting
+uninteresting diagnostic messages to the console.
+.Sh ENVIRONMENT
+.Bl -tag -width XXXX
+.It Va HOME
+User's home directory.
+Used to locate the sshd agent sockets in OpenSSH versions 10.1 or newer, and to
+determine defaults for XDG-related variables.
+.It Va RUST_LOG
+Logging configuration.
+In the simplest form, this takes a log level name to determine the noisiness of
+the program.
+Possible values are:
+.Sq error ,
+.Sq warn ,
+.Sq info ,
+.Sq debug
+and
+.Sq trace
+in order of verbosity.
+.It Va XDG_STATE_HOME
+Path to where to store program-specific state files (the daemon log in the common
+case, but also the daemon PID if
+.Va XDG_RUNTIME_DIR
+is not defined).
+.It Va XDG_RUNTIME_DIR
+Path to where to store program-specific runtime files (the PID file).
+.El
+.Sh FILES
+.Bl -tag -width XXXX
+.It Pa /tmp/ssh-agent.${USER}
+Default agent socket created by
+.Nm .
+Set
+.Va SSH_AGENT_SOCK
+to this path.
+.It Pa /tmp/ssh-${RANDOM}/agent.${USER}
+Location of sshd-provided agent sockets for OpenSSH versions before 10.1.
+.It Pa ${HOME}/.ssh/agent
+Location of sshd-provided agent sockets for OpenSSH versions 10.1 or newer.
+.It Pa ${XDG_RUNTIME_DIR}/ssh-agent-switcher.pid
+Default PID file when running in daemon mode.
+Falls back to
+.Pa ${XDG_STATE_HOME}/ssh-agent-switcher.pid
+if
+.Va XDG_RUNTIME_DIR
+is not set.
+.It Pa ${XDG_STATE_HOME}/ssh-agent-switcher.log
+Default log file when running in daemon mode.
+.El
+.Sh SEE ALSO
+.Xr ssh-agent 1
+.Sh AUTHORS
+The
+.Nm
+package was developed by
+.An Julio Merino
+.Aq julio@meroh.net .
