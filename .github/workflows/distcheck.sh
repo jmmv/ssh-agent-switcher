@@ -36,8 +36,8 @@ err() {
 
 check_srcs() {
     local makefile_srcs
-    makefile_srcs="$(grep '^SRCS = ' Makefile | cut -d ' ' -f 3-)"
-    [ -n "${makefile_srcs}" ] || err "Cannot determine SRCS from Makefile"
+    makefile_srcs="$(grep '^RS_SRCS = ' Makefile | cut -d ' ' -f 3-)"
+    [ -n "${makefile_srcs}" ] || err "Cannot determine RS_SRCS from Makefile"
 
     local actual_srcs
     actual_srcs="$(echo $(find src -type f | sort))"
