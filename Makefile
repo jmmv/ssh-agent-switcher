@@ -52,6 +52,10 @@ inttest: inttest.sh
 install: $(BIN)
 	install -m 755 -d "$(DESTDIR)$(PREFIX)/bin"
 	install -m 755 "$(BIN)" "$(DESTDIR)$(PREFIX)/bin/ssh-agent-switcher"
+	install -m 755 -d "$(DESTDIR)$(PREFIX)/share/doc/ssh-agent-switcher"
+	install -m 644 COPYING "$(DESTDIR)$(PREFIX)/share/doc/ssh-agent-switcher/COPYING"
+	install -m 644 NEWS.md "$(DESTDIR)$(PREFIX)/share/doc/ssh-agent-switcher/NEWS.md"
+	install -m 644 README.md "$(DESTDIR)$(PREFIX)/share/doc/ssh-agent-switcher/README.md"
 	install -m 755 -d "$(DESTDIR)$(PREFIX)/share/man/man1"
 	install -m 644 ssh-agent-switcher.1 "$(DESTDIR)$(PREFIX)/share/man/man1/ssh-agent-switcher.1"
 
