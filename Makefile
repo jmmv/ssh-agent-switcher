@@ -52,6 +52,8 @@ inttest: inttest.sh
 install: $(BIN)
 	install -m 755 -d "$(DESTDIR)$(PREFIX)/bin"
 	install -m 755 "$(BIN)" "$(DESTDIR)$(PREFIX)/bin/ssh-agent-switcher"
+	install -m 755 -d "$(DESTDIR)$(PREFIX)/share/man/man1"
+	install -m 644 ssh-agent-switcher.1 "$(DESTDIR)$(PREFIX)/share/man/man1/ssh-agent-switcher.1"
 
 .PHONY: clean
 clean:

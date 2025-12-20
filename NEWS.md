@@ -7,6 +7,8 @@ STILL UNDER DEVELOPMENT; NOT RELEASED YET.
 *   Added support for daemonization, making it easier (and more reliable)
     to start ssh-agent-switcher from login scripts.
 
+*   Added a manual page.
+
 *   Rewrote the codebase (in Rust) to support adding new features and to
     simplify maintenance on my side.
 
