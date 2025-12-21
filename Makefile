@@ -42,7 +42,16 @@ $(BIN): $(SRCS)
 	    cargo build $${arg}
 
 .PHONY: test
-test: $(BIN) inttest
+test: test-unit test-integration
+
+.PHONY: test-unit
+test-unit: $(SRCS)
+	@if [ "$(MODE)" = debug ]; then arg=; else arg=--$(MODE); fi; \
+	    echo cargo test $${arg}; \
+	    cargo test $${arg}
+
+.PHONY: test-integration
+test-integration: $(BIN) inttest
 	MODE=$(MODE) ./inttest
 
 inttest: inttest.sh

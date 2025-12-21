@@ -9,6 +9,10 @@ STILL UNDER DEVELOPMENT; NOT RELEASED YET.
 
 *   Added a manual page.
 
+*   Fixed long-standing issue where long agent responses with many keys
+    locked up the ssh-agent-switcher due to short internal buffers.
+    The proxying logic now supports partial reads and writes.
+
 *   Rewrote the codebase (in Rust) to support adding new features and to
     simplify maintenance on my side.
 

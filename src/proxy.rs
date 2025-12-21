@@ -24,43 +24,195 @@
 //! Proxies traffic between two sockets.
 
 use log::trace;
-use std::io::Result;
+use std::io::{self, Result};
+use tokio::io::Interest;
 use tokio::net::UnixStream;
+use tokio::select;
 
-// Forwards all request from the client to the agent, and all responses from the agent to the client.
-pub(crate) async fn proxy_request(client: &mut UnixStream, agent: &mut UnixStream) -> Result<()> {
-    // The buffer needs to be large enough to handle any one read or write by the client or
-    // the agent.  Otherwise bad things will happen.
-    //
-    // TODO(jmerino): This could be improved but it's better to keep it simple.  In particular,
-    // fixing this properly would require either spawning extra coroutines which, while they are
-    // cheap, they are tricky to handle; or it would require a way to perform non-blocking reads
-    // from the socket, which would then lead us to active polling which isn't too nice.
-    let mut buf = [0; 4096];
+/// Default internal read buffer size.  This should be big enough to fit most reasonable agent
+/// messages in one read/write, but the proxying logic can deal with partial messages.
+const READ_BUF_SIZE: usize = 1024;
 
-    loop {
-        trace!("Reading request from client");
-        client.readable().await?;
-        let n = client.try_read(&mut buf)?;
-        trace!("Read {} bytes from client", n);
-        if n == 0 {
-            break;
+/// Handles one read from `stream` once the stream is readable.  Uses an internal buffer of
+/// size `read_buf_size` and returns up to this many bytes.
+async fn handle_read(stream: &mut UnixStream, read_buf_size: usize) -> Result<Vec<u8>> {
+    let mut partial = vec![0; read_buf_size];
+    match stream.try_read(&mut partial) {
+        Ok(n) => {
+            partial.truncate(n);
+            Ok(partial)
         }
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+            // The readiness event is a false positive.
+            partial.truncate(0);
+            Ok(partial)
+        }
+        Err(e) => Err(e),
+    }
+}
 
-        trace!("Forwarding request of {} bytes to agent", n);
-        agent.writable().await?;
-        agent.try_write(&buf[0..n])?;
+/// Handles one write to `stream` of all of `buf` once the stream is writable.
+async fn handle_write(stream: &mut UnixStream, buf: &[u8]) -> Result<()> {
+    let mut pos = 0;
+    while pos < buf.len() {
+        stream.writable().await?;
+        match stream.try_write(&buf[pos..]) {
+            Ok(n) => {
+                pos += n;
+                debug_assert!(pos <= buf.len());
+            }
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                // The readiness event is a false positive; try again.
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
 
-        trace!("Reading response from agent");
-        agent.readable().await?;
-        let n = agent.try_read(&mut buf)?;
-        trace!("Read {} bytes from agent", n);
-        if n > 0 {
-            trace!("Forwarding response of {} bytes to agent", n);
-            client.writable().await?;
-            client.try_write(&buf[0..n])?;
+/// Forwards all request from the client to the agent and all responses from the agent to the client.
+///
+/// This is separate from `proxy_request` for testing purposes only as it allows configuring the
+/// internal behavior of the proxying logic.
+async fn proxy_request_internal(
+    client: &mut UnixStream,
+    agent: &mut UnixStream,
+    read_buf_size: usize,
+) -> Result<()> {
+    let mut client_buf = vec![];
+    let mut agent_buf = vec![];
+    let mut client_done = false;
+    let mut agent_done = false;
+    while !(client_done && agent_done && agent_buf.is_empty() && client_buf.is_empty()) {
+        select! {
+            ready = client.ready(Interest::READABLE), if !client_done => {
+                if ready?.is_readable() {
+                    let partial = handle_read(client, read_buf_size).await?;
+                    trace!(
+                        "Read {} bytes from client; client buffer is now {}",
+                        partial.len(), partial.len() + client_buf.len()
+                    );
+                    if partial.is_empty() {
+                        trace!("Client socket is now half-closed");
+                        client_done = true;
+                    } else {
+                        client_buf.extend_from_slice(&partial);
+                    }
+                }
+            }
+
+            ready = client.ready(Interest::WRITABLE), if !agent_buf.is_empty() => {
+                if ready?.is_writable() {
+                    trace!("Writing {} bytes to client", agent_buf.len());
+                    handle_write(client, &mut agent_buf).await?;
+                    agent_buf.clear();
+                }
+            }
+
+            ready = agent.ready(Interest::READABLE), if !agent_done => {
+                if ready?.is_readable() {
+                    let partial = handle_read(agent, read_buf_size).await?;
+                    trace!(
+                        "Read {} bytes from agent; agent buffer is now {}",
+                        partial.len(), partial.len() + agent_buf.len()
+                    );
+                    if partial.is_empty() {
+                        trace!("Agent socket is now half-closed");
+                        agent_done = true;
+                    } else {
+                        agent_buf.extend_from_slice(&partial);
+                    }
+                }
+            }
+
+            ready = agent.ready(Interest::WRITABLE), if !client_buf.is_empty() => {
+                if ready?.is_writable() {
+                    trace!("Writing {} bytes to agent", client_buf.len());
+                    handle_write(agent, &mut client_buf).await?;
+                    client_buf.clear();
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+/// Forwards all request from the client to the agent and all responses from the agent to the client.
+pub(crate) async fn proxy_request(client: &mut UnixStream, agent: &mut UnixStream) -> Result<()> {
+    //proxy_request_internal(client, agent, READ_BUF_SIZE).await
+    tokio::io::copy_bidirectional(client, agent).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Reads one message from `stream` in one go.
+    async fn read_all(stream: &mut UnixStream, expected_len: usize) -> io::Result<Vec<u8>> {
+        let mut buf = [0; 1024]; // Should be big enough for all test messages.
+        let mut n = 0;
+        while n < expected_len {
+            stream.readable().await?;
+            match stream.try_read(&mut buf[n..]) {
+                Ok(n2) => n += n2,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => (),
+                Err(e) => return Err(e),
+            }
+        }
+        assert!(n < buf.len(), "Message reached buffer size; might be incomplete");
+        Ok(buf[0..n].to_owned())
+    }
+
+    /// Writes all of `message` into `stream` in one go.
+    async fn write_all(stream: &mut UnixStream, message: &[u8]) -> io::Result<()> {
+        stream.writable().await?;
+        let n = stream.try_write(message)?;
+        assert_eq!(n, message.len(), "Failed to write message in one go");
+        Ok(())
+    }
+
+    /// Performs a bidirectional proxying test with an internal read size of `read_buf_size`
+    /// by sending `client_msg` to the agent and responding with `agent_msg` to the client.
+    async fn do_bidi_test(
+        read_buf_size: usize,
+        client_msg: &str,
+        agent_msg: &str,
+    ) -> io::Result<()> {
+        let (mut client_1, mut client_2) = UnixStream::pair()?;
+        let (mut agent_1, mut agent_2) = UnixStream::pair()?;
+
+        let proxy = tokio::spawn(async move {
+            proxy_request_internal(&mut client_2, &mut agent_1, read_buf_size).await
+        });
+
+        let client_msg = client_msg.as_bytes();
+        write_all(&mut client_1, client_msg).await?;
+        assert_eq!(client_msg, read_all(&mut agent_2, client_msg.len()).await?);
+
+        let agent_msg = agent_msg.as_bytes();
+        write_all(&mut agent_2, agent_msg).await?;
+        assert_eq!(agent_msg, read_all(&mut client_1, agent_msg.len()).await?);
+
+        drop(client_1);
+        proxy.await??;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_one_byte_at_a_time() -> io::Result<()> {
+        do_bidi_test(1, "abcdefg", "hijklmn").await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_chunked() -> io::Result<()> {
+        do_bidi_test(8, "request longer than eight bytes", "response longer than eight bytes").await
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_one_chunk() -> io::Result<()> {
+        do_bidi_test(1024, "request shorter than 1024 bytes", "response shorter than 1024 bytes")
+            .await
+    }
 }
