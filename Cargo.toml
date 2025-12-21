@@ -17,4 +17,4 @@ rev = "99c61f2f452df1c4fd1894359ac6195162cabb3e"
 
 [dependencies.tokio]
 version = "1"
-features = ["macros", "net", "rt-multi-thread", "signal"]
+features = ["io-util", "macros", "net", "rt-multi-thread", "signal"]

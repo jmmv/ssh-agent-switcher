@@ -30,7 +30,7 @@ PREFIX = /usr/local
 MODE = debug
 
 BIN = target/$(MODE)/ssh-agent-switcher
-RS_SRCS = src/find.rs src/lib.rs src/main.rs src/proxy.rs
+RS_SRCS = src/find.rs src/lib.rs src/main.rs
 SRCS = Cargo.toml $(RS_SRCS)
 
 .PHONY: all
