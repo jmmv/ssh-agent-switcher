@@ -176,10 +176,14 @@ fn daemon_parent(socket_path: PathBuf, log_file: PathBuf, pid_file: PathBuf) -> 
 }
 
 fn daemon_child(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<i32> {
-    if let Err(e) = ssh_agent_switcher::run(socket_path, &agents_dirs, pid_file) {
-        bail!("{}", e);
-    }
-    Ok(0)
+    let runtime =
+        tokio::runtime::Runtime::new().map_err(|e| anyhow!("Failed to start runtime: {}", e))?;
+    runtime.block_on(async move {
+        if let Err(e) = ssh_agent_switcher::run(socket_path, &agents_dirs, pid_file).await {
+            bail!("{}", e);
+        }
+        Ok(0)
+    })
 }
 
 fn app_main(matches: Matches) -> Result<i32> {
