@@ -151,6 +151,7 @@ fn app_setup(builder: Builder) -> Builder {
         .copyright("Copyright 2023-2025 Julio Merino")
         .homepage("https://github.com/jmmv/ssh-agent-switcher/")
         .extra_help(app_extra_help)
+        .disable_init_env_logger()
         .optopt(
             "",
             "agents-dirs",
@@ -194,8 +195,6 @@ fn app_main(matches: Matches) -> Result<i32> {
     let pid_file = get_pid_file(&matches, &xdg_dirs)?;
     let socket_path = get_socket_path(&matches)?;
 
-    let mut logger_builder =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
     if matches.opt_present("daemon") {
         let log =
             File::options().append(true).create(true).open(&log_file).map_err(|e| {
@@ -204,14 +203,14 @@ fn app_main(matches: Matches) -> Result<i32> {
 
         match Daemonize::new().pid_file(&pid_file).stderr(log).execute() {
             Outcome::Parent(Ok(_parent)) => {
-                logger_builder.init();
+                init_env_logger(&matches.program_name);
                 daemon_parent(socket_path, log_file, pid_file)
             }
             Outcome::Parent(Err(e)) => {
                 bail!("Failed to become daemon: {}", e);
             }
             Outcome::Child(Ok(_child)) => {
-                logger_builder.init();
+                init_env_logger(&matches.program_name);
                 daemon_child(socket_path, &agents_dirs, pid_file)
             }
             Outcome::Child(Err(e)) => {
@@ -223,7 +222,7 @@ fn app_main(matches: Matches) -> Result<i32> {
             }
         }
     } else {
-        logger_builder.init();
+        init_env_logger(&matches.program_name);
         info!("Running in the foreground: ignoring --log-file and --pid-file");
         daemon_child(socket_path, &agents_dirs, pid_file)
     }

@@ -6,14 +6,14 @@ publish = false  # Not ready for release yet.
 
 [dependencies]
 daemonize = "0.5"
-env_logger = "0.11"
 libc = "0.2"
 log = "0.4"
 xdg = "3.0"
 
 [dependencies.getoptsargs]
 git = "https://github.com/jmmv/getoptsargs"
-rev = "99c61f2f452df1c4fd1894359ac6195162cabb3e"
+rev = "0d0cdec51d22b9d9cd9962d80963bf73afb38f6e"
+features = ["env_logger"]
 
 [dependencies.tokio]
 version = "1"
