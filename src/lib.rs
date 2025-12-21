@@ -24,15 +24,14 @@
 //! Serves a Unix domain socket that proxies connections to any valid SSH agent provided by sshd.
 
 use log::{debug, info, warn};
-use signal_hook::{consts::SIGHUP, consts::TERM_SIGNALS, iterator::Signals};
+use std::env;
+use std::fs;
 use std::io;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use std::{env, fs};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::select;
+use tokio::signal::unix::{signal, SignalKind};
 
 mod find;
 mod proxy;
@@ -56,47 +55,6 @@ fn set_umask(umask: libc::mode_t) -> UmaskGuard {
     UmaskGuard { old_umask: unsafe { libc::umask(umask) } }
 }
 
-/// Installs global signal handlers for termination signals.
-///
-/// Returns a thread that blocks until any of the signals is received and immediately deletes
-/// `cleanup_files` before returning.
-fn setup_signals(cleanup_files: &[&Path], stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
-    let mut sigs = vec![SIGHUP];
-    sigs.extend(TERM_SIGNALS);
-    let mut signals = Signals::new(&sigs)
-        .map_err(|e| format!("Cannot set up termination signal handlers: {}", e))?;
-
-    let handle = {
-        let cleanup_files =
-            cleanup_files.into_iter().map(|p| (*p).to_owned()).collect::<Vec<PathBuf>>();
-        thread::spawn(move || {
-            for sig in signals.forever() {
-                if TERM_SIGNALS.contains(&sig) {
-                    info!(
-                        "Shutting down due to signal {:?} and removing {}",
-                        sig,
-                        cleanup_files
-                            .iter()
-                            .map(|p| (*p).display().to_string())
-                            .collect::<Vec<String>>()
-                            .join(", ")
-                    );
-                    break;
-                }
-                debug!("Ignoring signal {:?}", sig);
-            }
-
-            for file in cleanup_files {
-                let _ = fs::remove_file(file);
-            }
-
-            stop.store(true, Ordering::Relaxed);
-        })
-    };
-
-    Ok(handle)
-}
-
 /// Creates the agent socket to listen on.
 ///
 /// This makes sure that the socket is only accessible by the current user.
@@ -110,19 +68,19 @@ fn create_listener(socket_path: &Path) -> Result<UnixListener> {
 }
 
 /// Handles one incoming connection on `client`.
-fn handle_connection(
+async fn handle_connection(
     mut client: UnixStream,
     agents_dirs: &[PathBuf],
     home: Option<&Path>,
     uid: libc::uid_t,
 ) -> Result<()> {
-    let mut agent = match find::find_socket(agents_dirs, home, uid) {
+    let mut agent = match find::find_socket(agents_dirs, home, uid).await {
         Some(socket) => socket,
         None => {
             return Err("No agent found; cannot proxy request".to_owned());
         }
     };
-    let result = proxy::proxy_request(&mut client, &mut agent).map_err(|e| format!("{}", e));
+    let result = proxy::proxy_request(&mut client, &mut agent).await.map_err(|e| format!("{}", e));
     debug!("Closing client connection");
     result
 }
@@ -132,51 +90,53 @@ fn handle_connection(
 /// This serves the SSH agent socket on `socket_path` and looks for sshd sockets in `agents_dirs`.
 ///
 /// The `pid_file` needs to be passed in for cleanup purposes.
-pub fn run(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<()> {
+pub async fn run(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<()> {
     let home = env::var("HOME").map(|v| Some(PathBuf::from(v))).unwrap_or(None);
     let uid = unsafe { libc::getuid() };
 
-    // Install signal handlers before we create the socket so that we don't leave it behind in any
-    // case.
-    let stop = Arc::from(AtomicBool::new(false));
-    let cleanup_files = [
-        socket_path.as_path(),
-        // Because we catch signals, daemonize doesn't properly clean up the PID file so we have.
-        // to do it ourselves.
-        pid_file.as_path(),
-    ];
-    let handle = setup_signals(cleanup_files.as_slice(), stop.clone())?;
+    let mut sighup = signal(SignalKind::hangup())
+        .map_err(|e| format!("Failed to install SIGHUP handler: {}", e))?;
+    let mut sigint = signal(SignalKind::interrupt())
+        .map_err(|e| format!("Failed to install SIGINT handler: {}", e))?;
+    let mut sigquit = signal(SignalKind::quit())
+        .map_err(|e| format!("Failed to install SIGQUIT handler: {}", e))?;
+    let mut sigterm = signal(SignalKind::terminate())
+        .map_err(|e| format!("Failed to install SIGTERM handler: {}", e))?;
 
     let listener = create_listener(&socket_path)?;
 
-    // TODO(jmmv): signal_hook forcibly enables `SA_RESTART` so, for simplicity, we do active
-    // polling of the termination condition.  This is ugly though: we should use a pipe and select
-    // below.
-    listener
-        .set_nonblocking(true)
-        .map_err(|e| format!("Cannot set socket to non-blocking: {}", e))?;
-
     debug!("Entering main loop");
-    while !stop.load(Ordering::Relaxed) {
-        match listener.accept() {
-            Ok((socket, _addr)) => {
-                debug!("Connection accepted");
-                // TODO(jmmv): Connections are handled sequentially.  This is just fine for this
-                // program, but if we had an easier way to do asynchronous operations, we could
-                // fix this.
-                if let Err(e) = handle_connection(socket, agents_dirs, home.as_deref(), uid) {
-                    warn!("Dropping connection due to error: {}", e);
+    let mut stop = None;
+    while stop.is_none() {
+        select! {
+            result = listener.accept() => match result {
+                Ok((socket, _addr)) => {
+                    debug!("Connection accepted");
+                    // TODO(jmmv): Connections are handled sequentially.  This is... fine.
+                    if let Err(e) = handle_connection(socket, agents_dirs, home.as_deref(), uid).await {
+                        warn!("Dropping connection due to error: {}", e);
+                    }
                 }
-            }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            Err(e) => warn!("Failed to accept connection: {}", e),
-        };
+                Err(e) => warn!("Failed to accept connection: {}", e),
+            },
+
+            _ = sighup.recv() => (),
+            _ = sigint.recv() => stop = Some("SIGINT"),
+            _ = sigquit.recv() => stop = Some("SIGQUIT"),
+            _ = sigterm.recv() => stop = Some("SIGTERM"),
+        }
     }
     debug!("Main loop exited");
 
-    handle.join().map_err(|_| format!("Failed to wait for signals"))
+    let stop = stop.expect("Loop can only exit by setting stop");
+    info!("Shutting down due to {} and removing {}", stop, socket_path.display());
+
+    let _ = fs::remove_file(&socket_path);
+    // Because we catch signals, daemonize doesn't properly clean up the PID file so we have
+    // to do it ourselves.
+    let _ = fs::remove_file(&pid_file);
+
+    Ok(())
 }
 
 /// Waits for `path` to exist for a maximum period of time using operation `op`.

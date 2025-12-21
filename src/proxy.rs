@@ -24,11 +24,11 @@
 //! Proxies traffic between two sockets.
 
 use log::trace;
-use std::io::{Read, Result, Write};
-use std::os::unix::net::UnixStream;
+use std::io::Result;
+use tokio::net::UnixStream;
 
 // Forwards all request from the client to the agent, and all responses from the agent to the client.
-pub(crate) fn proxy_request(client: &mut UnixStream, agent: &mut UnixStream) -> Result<()> {
+pub(crate) async fn proxy_request(client: &mut UnixStream, agent: &mut UnixStream) -> Result<()> {
     // The buffer needs to be large enough to handle any one read or write by the client or
     // the agent.  Otherwise bad things will happen.
     //
@@ -40,21 +40,25 @@ pub(crate) fn proxy_request(client: &mut UnixStream, agent: &mut UnixStream) -> 
 
     loop {
         trace!("Reading request from client");
-        let n = client.read(&mut buf)?;
+        client.readable().await?;
+        let n = client.try_read(&mut buf)?;
         trace!("Read {} bytes from client", n);
         if n == 0 {
             break;
         }
 
         trace!("Forwarding request of {} bytes to agent", n);
-        agent.write_all(&buf[0..n])?;
+        agent.writable().await?;
+        agent.try_write(&buf[0..n])?;
 
         trace!("Reading response from agent");
-        let n = agent.read(&mut buf)?;
+        agent.readable().await?;
+        let n = agent.try_read(&mut buf)?;
         trace!("Read {} bytes from agent", n);
         if n > 0 {
             trace!("Forwarding response of {} bytes to agent", n);
-            client.write_all(&buf[0..n])?;
+            client.writable().await?;
+            client.try_write(&buf[0..n])?;
         }
     }
 

@@ -26,9 +26,9 @@
 use log::{debug, info, trace};
 use std::io::{ErrorKind, Result};
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::{fs, path::PathBuf};
+use tokio::net::UnixStream;
 
 /// Syntactic sugar to instantiate an error.
 #[macro_export]
@@ -43,7 +43,7 @@ macro_rules! error {
 }
 
 /// Attempts to open the socket `path`.
-fn try_open(path: &Path) -> Result<UnixStream> {
+async fn try_open(path: &Path) -> Result<UnixStream> {
     let name = path.file_name().expect(
         "The path comes from joining a directory to one of its entries, so it must have a name",
     );
@@ -69,6 +69,7 @@ fn try_open(path: &Path) -> Result<UnixStream> {
     }
 
     let socket = UnixStream::connect(&path)
+        .await
         .map_err(|e| error!(e.kind(), "Cannot connect to socket: {}", e))?;
 
     Ok(socket)
@@ -79,7 +80,7 @@ fn try_open(path: &Path) -> Result<UnixStream> {
 ///
 /// This tries all possible files in search for a socket and only returns an error if no valid
 /// and alive candidate can be found.
-fn find_in_subdir(dir: &Path) -> Option<UnixStream> {
+async fn find_in_subdir(dir: &Path) -> Option<UnixStream> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
@@ -106,7 +107,7 @@ fn find_in_subdir(dir: &Path) -> Option<UnixStream> {
     candidates.sort();
 
     for candidate in candidates {
-        let socket = match try_open(&candidate) {
+        let socket = match try_open(&candidate).await {
             Ok(socket) => socket,
             Err(e) => {
                 trace!("Ignoring candidate socket {}: {}", candidate.display(), e);
@@ -125,7 +126,7 @@ fn find_in_subdir(dir: &Path) -> Option<UnixStream> {
 /// Scans the contents of `dir`, which should point to one of the directories where sshd places the
 /// session directories for forwarded agents, looks for a valid connection to an agent, opens the
 /// agent's socket, and returns the connection to the agent.
-fn try_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<UnixStream> {
+async fn try_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<UnixStream> {
     // It is tempting to use the *at family of system calls to avoid races when checking for
     // file metadata before opening the socket... but there is no guarantee that the sshd
     // instance will be present at all even after we open the socket, so the races don't
@@ -155,7 +156,7 @@ fn try_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<UnixStream> {
         ));
     }
 
-    match find_in_subdir(dir) {
+    match find_in_subdir(dir).await {
         Some(socket) => Ok(socket),
         None => return Err(error!(ErrorKind::NotFound, "No socket in subdirectory")),
     }
@@ -167,7 +168,7 @@ fn try_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<UnixStream> {
 ///
 /// This tries all possible directories in search for a socket and only returns an error if no valid
 /// and alive candidate can be found.
-fn find_in_shared_dir(dir: &Path, our_uid: libc::uid_t) -> Option<UnixStream> {
+async fn find_in_shared_dir(dir: &Path, our_uid: libc::uid_t) -> Option<UnixStream> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
@@ -206,7 +207,7 @@ fn find_in_shared_dir(dir: &Path, our_uid: libc::uid_t) -> Option<UnixStream> {
     subdirs.sort();
 
     for subdir in subdirs {
-        let socket = match try_shared_subdir(&subdir, our_uid) {
+        let socket = match try_shared_subdir(&subdir, our_uid).await {
             Ok(socket) => socket,
             Err(e) => {
                 trace!("Ignoring {}: {}", subdir.display(), e);
@@ -226,7 +227,7 @@ fn find_in_shared_dir(dir: &Path, our_uid: libc::uid_t) -> Option<UnixStream> {
 ///
 /// This tries all possible files in search for a socket and only returns an error if no valid
 /// and alive candidate can be found.
-pub(super) fn find_socket(
+pub(super) async fn find_socket(
     dirs: &[PathBuf],
     home: Option<&Path>,
     uid: libc::uid_t,
@@ -235,14 +236,14 @@ pub(super) fn find_socket(
         if let Some(home) = home {
             if dir.starts_with(home) {
                 debug!("Looking for an agent socket in {} with HOME naming scheme", dir.display());
-                if let Some(socket) = find_in_subdir(dir) {
+                if let Some(socket) = find_in_subdir(dir).await {
                     return Some(socket);
                 }
             }
         }
 
         debug!("Looking for an agent socket in {} subdirs", dir.display());
-        if let Some(socket) = find_in_shared_dir(dir, uid) {
+        if let Some(socket) = find_in_shared_dir(dir, uid).await {
             return Some(socket);
         }
     }
