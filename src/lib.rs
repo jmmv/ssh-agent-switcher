@@ -34,7 +34,6 @@ use tokio::select;
 use tokio::signal::unix::{signal, SignalKind};
 
 mod find;
-mod proxy;
 
 /// Result type for this crate.
 type Result<T> = std::result::Result<T, String>;
@@ -80,7 +79,10 @@ async fn handle_connection(
             return Err("No agent found; cannot proxy request".to_owned());
         }
     };
-    let result = proxy::proxy_request(&mut client, &mut agent).await.map_err(|e| format!("{}", e));
+    let result = tokio::io::copy_bidirectional(&mut client, &mut agent)
+        .await
+        .and_then(|_| Ok(()))
+        .map_err(|e| format!("{}", e));
     debug!("Closing client connection");
     result
 }
