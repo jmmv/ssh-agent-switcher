@@ -26,8 +26,11 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+DESTDIR =
 PREFIX = /usr/local
 MODE = debug
+
+sinclude config.mk
 
 BIN = target/$(MODE)/ssh-agent-switcher
 RS_SRCS = src/find.rs src/lib.rs src/main.rs
