@@ -1,5 +1,7 @@
 # ssh-agent-switcher
 
+[**SSH agent forwarding and tmux done right**](https://jmmv.dev/2023/11/ssh-agent-forwarding-and-tmux-done.html)
+
 ssh-agent-switcher is a daemon that proxies SSH agent connections to any valid
 forwarded agent provided by sshd.  This allows long-lived processes such as
 terminal multiplexers like `tmux` or `screen` to access the connection-specific
