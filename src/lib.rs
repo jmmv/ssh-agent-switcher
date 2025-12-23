@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 
 mod find;
 
