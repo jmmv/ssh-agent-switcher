@@ -11,8 +11,7 @@ log = "0.4"
 xdg = "3.0"
 
 [dependencies.getoptsargs]
-git = "https://github.com/jmmv/getoptsargs"
-rev = "0d0cdec51d22b9d9cd9962d80963bf73afb38f6e"
+version = "0.1"
 features = ["env_logger"]
 
 [dependencies.tokio]
