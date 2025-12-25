@@ -1,8 +1,15 @@
 [package]
 name = "ssh-agent-switcher"
-version = "0.1.0"
+version = "1.0.0"
+license = "BSD-3-Clause"
+authors = ["Julio Merino <julio@meroh.net>"]
+categories = ["command-line-utilities"]
+keywords = ["screen", "ssh", "ssh-agent", "tmux"]
+description = "SSH agent forwarding and tmux done right"
+homepage = "https://github.com/jmmv/ssh-agent-switcher/"
+repository = "https://github.com/jmmv/ssh-agent-switcher.git"
+readme = "README.md"
 edition = "2024"
-publish = false  # Not ready for release yet.
 
 [dependencies]
 daemonize = "0.5"
