@@ -1,8 +1,8 @@
 # Major changes between releases
 
-## Changes in version 0.0.99
+## Changes in version 1.0.0
 
-STILL UNDER DEVELOPMENT; NOT RELEASED YET.
+**Released on 2025-12-25.**
 
 *   Added support for daemonization, making it easier (and more reliable)
     to start ssh-agent-switcher from login scripts.

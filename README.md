@@ -30,10 +30,19 @@ real forwarded agent.
 ssh-agent-switcher is written in Rust so you will need a standard Rust toolchain
 in place.  See [rustup.rs](https://rustup.rs/) for installation instructions.
 
-Then use `make` to build and install the binary in release mode:
+Then use `make` to build and install the binary in release mode along with its
+manual page and supporting documentation:
 
 ```sh
 make install MODE=release PREFIX="${HOME}/.local"
+```
+
+You may also use Cargo to install this program under `${HOME}/.cargo/bin`, but
+the recommended method is to use `make install` as shown above because Cargo
+will not install anything other than the program binary:
+
+```sh
+cargo install ssh-agent-switcher
 ```
 
 ## Usage
