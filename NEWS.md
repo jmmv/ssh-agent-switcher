@@ -4,7 +4,7 @@
 
 **STILL UNDER DEVELOPMENT; NOT RELEASED YET**
 
-*   No changes recorded.
+*   Added a `Cargo.lock` file for reproducible builds.
 
 ## Changes in version 1.0.0
 
