@@ -148,7 +148,7 @@ fn app_extra_help(output: &mut dyn io::Write) -> io::Result<()> {
 fn app_setup(builder: Builder) -> Builder {
     builder
         .bugs("https://github.com/jmmv/ssh-agent-switcher/issues/")
-        .copyright("Copyright 2023-2025 Julio Merino")
+        .copyright("Copyright 2023-2026 Julio Merino")
         .homepage("https://github.com/jmmv/ssh-agent-switcher/")
         .extra_help(app_extra_help)
         .disable_init_env_logger()

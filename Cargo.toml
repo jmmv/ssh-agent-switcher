@@ -1,6 +1,6 @@
 [package]
 name = "ssh-agent-switcher"
-version = "1.0.0"
+version = "1.0.1"
 license = "BSD-3-Clause"
 authors = ["Julio Merino <julio@meroh.net>"]
 categories = ["command-line-utilities"]
