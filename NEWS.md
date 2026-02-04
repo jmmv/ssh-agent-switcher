@@ -2,7 +2,7 @@
 
 ## Changes in version 1.0.1
 
-**STILL UNDER DEVELOPMENT; NOT RELEASED YET**
+**Released on 2026-02-03.**
 
 *   Added a `Cargo.lock` file for reproducible builds.
 
