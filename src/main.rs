@@ -54,7 +54,7 @@ fn default_agents_dirs() -> Result<Vec<PathBuf>> {
 /// Gets the value of the `--agents-dirs` flag, computing a default if necessary.
 fn get_agents_dirs(matches: &Matches) -> Result<Vec<PathBuf>> {
     if let Some(s) = matches.opt_str("agents-dirs") {
-        return Ok(s.split(":").into_iter().map(PathBuf::from).collect());
+        return Ok(s.split(":").map(PathBuf::from).collect());
     }
 
     default_agents_dirs()
@@ -180,7 +180,7 @@ fn daemon_child(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf
     let runtime =
         tokio::runtime::Runtime::new().map_err(|e| anyhow!("Failed to start runtime: {}", e))?;
     runtime.block_on(async move {
-        if let Err(e) = ssh_agent_switcher::run(socket_path, &agents_dirs, pid_file).await {
+        if let Err(e) = ssh_agent_switcher::run(socket_path, agents_dirs, pid_file).await {
             bail!("{}", e);
         }
         Ok(0)
