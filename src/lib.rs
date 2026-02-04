@@ -80,8 +80,7 @@ async fn handle_connection(
         }
     };
     let result = tokio::io::copy_bidirectional(&mut client, &mut agent)
-        .await
-        .and_then(|_| Ok(()))
+        .await.map(|_| ())
         .map_err(|e| format!("{}", e));
     debug!("Closing client connection");
     result

@@ -62,7 +62,7 @@ async fn try_open(path: &Path) -> Result<UnixStream> {
     }
 
     let metadata =
-        fs::metadata(&path).map_err(|e| error!(e.kind(), "Failed to get metadata: {}", e))?;
+        fs::metadata(path).map_err(|e| error!(e.kind(), "Failed to get metadata: {}", e))?;
 
     if (metadata.mode() & libc::S_IFSOCK as u32) == 0 {
         return Err(error!(ErrorKind::InvalidInput, "Path is not a socket"));
@@ -144,7 +144,7 @@ async fn try_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<UnixStream> {
         return Err(error!(ErrorKind::InvalidInput, "Basename does not start with 'ssh-'"));
     }
 
-    let metadata = fs::metadata(&dir).map_err(|e| error!(e.kind(), "Stat failed: {}", e))?;
+    let metadata = fs::metadata(dir).map_err(|e| error!(e.kind(), "Stat failed: {}", e))?;
 
     if metadata.uid() != uid {
         return Err(error!(
@@ -158,7 +158,7 @@ async fn try_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<UnixStream> {
 
     match find_in_subdir(dir).await {
         Some(socket) => Ok(socket),
-        None => return Err(error!(ErrorKind::NotFound, "No socket in subdirectory")),
+        None => Err(error!(ErrorKind::NotFound, "No socket in subdirectory")),
     }
 }
 
@@ -233,14 +233,13 @@ pub(super) async fn find_socket(
     uid: libc::uid_t,
 ) -> Option<UnixStream> {
     for dir in dirs {
-        if let Some(home) = home {
-            if dir.starts_with(home) {
+        if let Some(home) = home
+            && dir.starts_with(home) {
                 debug!("Looking for an agent socket in {} with HOME naming scheme", dir.display());
                 if let Some(socket) = find_in_subdir(dir).await {
                     return Some(socket);
                 }
             }
-        }
 
         debug!("Looking for an agent socket in {} subdirs", dir.display());
         if let Some(socket) = find_in_shared_dir(dir, uid).await {
