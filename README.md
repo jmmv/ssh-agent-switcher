@@ -62,6 +62,62 @@ For `fish`, extend `~/.config/fish/config.fish` with the following:
 set -gx SSH_AUTH_SOCK "/tmp/ssh-agent.$USER"
 ```
 
+<details><summary><h2>Nix usage</h2></summary>
+
+Reference ssh-agent-switcher as a flake input and pass it to your home-manager modules:
+```nix
+{
+    inputs = {
+        # Rest of your config...
+        ssh-agent-switcher = {
+          url = "github:jmmv/ssh-agent-switcher";
+        };
+    };
+    outputs = {
+        # Rest of your inputs...
+        ssh-agent-switcher,
+        ...
+    } : {
+      nixosConfigurations = {
+        someConfig = nixpkgs.lib.nixosSystem {
+          modules = [
+            # ...
+            {
+              home-manager.extraSpecialArgs = { inherit ssh-agent-switcher; };
+              home-manager.users.some-user = import ./home.nix;
+            }
+          ];
+        };
+      };
+    };
+}
+```
+
+Extend your login script within your home-manager module:
+You only need to set the config for the shell you use. Don't forget to change `x86_64-linux` if you're on a different system.
+
+```nix
+{ ssh-agent-switcher, ... } : {
+  # ...
+  programs.zsh.loginExtra = ''
+    ${ssh-agent-switcher.packages.x86_64-linux.default}/bin/ssh-agent-switcher --daemon 2>/dev/null || true
+    export SSH_AUTH_SOCK="/tmp/ssh-agent.''${USER}"
+  '';
+
+  programs.bash.profileExtra = ''
+    ${ssh-agent-switcher.packages.x86_64-linux.default}/bin/ssh-agent-switcher --daemon 2>/dev/null || true
+    export SSH_AUTH_SOCK="/tmp/ssh-agent.''${USER}"
+  '';
+
+  programs.fish.loginShellInit = ''
+    ${ssh-agent-switcher.packages.x86_64-linux.default}/bin/ssh-agent-switcher --daemon &>/dev/null || true
+    set -gx SSH_AUTH_SOCK "/tmp/ssh-agent.''$USER"
+  '';
+}
+```
+
+</details>
+
 ## Security considerations
 
 ssh-agent-switcher is intended to run under your personal unprivileged account
