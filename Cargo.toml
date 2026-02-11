@@ -21,3 +21,6 @@ xdg = "3.0"
 [dependencies.getoptsargs]
 version = "0.1"
 features = ["env_logger"]
+
+[dev-dependencies]
+tempfile = "3"
