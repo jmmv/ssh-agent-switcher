@@ -389,3 +389,163 @@ fn test_foreground_mode() {
 fn test_daemon_mode() {
     run_switcher_test(true);
 }
+
+/// Test various communication patterns through the switcher.
+#[test]
+fn test_communication_patterns() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+    // Create a single echo backend
+    let backend_dir = temp_dir.path().join("ssh-backend");
+    std::fs::create_dir(&backend_dir).expect("Failed to create backend dir");
+    let backend_socket = backend_dir.join("agent.test");
+    let _backend = spawn_backend(&backend_socket, BackendType::Echo);
+
+    let switcher_socket = temp_dir.path().join("switcher.sock");
+
+    // Start switcher
+    let mut child = Command::new(binary_path())
+        .arg("--socket-path")
+        .arg(&switcher_socket)
+        .arg("--agents-dirs")
+        .arg(temp_dir.path())
+        .spawn()
+        .expect("Failed to start ssh-agent-switcher");
+
+    assert!(
+        wait_for_path(&switcher_socket, Duration::from_secs(5)),
+        "Switcher socket was not created"
+    );
+
+    // Helper to create a connected stream
+    let connect = || {
+        let stream = UnixStream::connect(&switcher_socket).expect("Failed to connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+    };
+
+    // Test 1: Single byte write and read
+    {
+        let mut stream = connect();
+        stream.write_all(&[0x42]).expect("Failed to write 1 byte");
+        let mut buf = [0u8; 1];
+        stream.read_exact(&mut buf).expect("Failed to read 1 byte");
+        assert_eq!(buf[0], 0x42, "Single byte echo failed");
+    }
+
+    // Test 2: Small writes and reads (various sizes)
+    for size in [1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128, 255, 256] {
+        let mut stream = connect();
+        let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
+        stream
+            .write_all(&data)
+            .unwrap_or_else(|e| panic!("Failed to write {size} bytes: {e}"));
+        let mut response = vec![0u8; size];
+        stream
+            .read_exact(&mut response)
+            .unwrap_or_else(|e| panic!("Failed to read {size} bytes: {e}"));
+        assert_eq!(response, data, "Echo failed for size {size}");
+    }
+
+    // Test 3: Larger writes and reads
+    for size in [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536] {
+        let mut stream = connect();
+        let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
+        stream
+            .write_all(&data)
+            .unwrap_or_else(|e| panic!("Failed to write {size} bytes: {e}"));
+        let mut response = vec![0u8; size];
+        stream
+            .read_exact(&mut response)
+            .unwrap_or_else(|e| panic!("Failed to read {size} bytes: {e}"));
+        assert_eq!(response, data, "Echo failed for size {size}");
+    }
+
+    // Test 4: Ping-pong - many small exchanges on same connection
+    {
+        let mut stream = connect();
+        for i in 0..100u8 {
+            let data = [i, i.wrapping_add(1), i.wrapping_add(2)];
+            stream.write_all(&data).expect("Ping-pong write failed");
+            let mut response = [0u8; 3];
+            stream.read_exact(&mut response).expect("Ping-pong read failed");
+            assert_eq!(response, data, "Ping-pong failed at iteration {i}");
+        }
+    }
+
+    // Test 5: Series of writes, then series of reads (buffered)
+    {
+        let mut stream = connect();
+        let chunk_size = 100;
+        let num_chunks = 10;
+
+        // Write all chunks
+        for i in 0..num_chunks {
+            let data: Vec<u8> = (0..chunk_size).map(|j| ((i * chunk_size + j) & 0xFF) as u8).collect();
+            stream.write_all(&data).expect("Buffered write failed");
+        }
+
+        // Read all chunks back
+        let mut all_response = vec![0u8; chunk_size * num_chunks];
+        stream
+            .read_exact(&mut all_response)
+            .expect("Buffered read failed");
+
+        // Verify
+        let expected: Vec<u8> = (0..(chunk_size * num_chunks))
+            .map(|i| (i & 0xFF) as u8)
+            .collect();
+        assert_eq!(all_response, expected, "Buffered echo failed");
+    }
+
+    // Test 6: Interleaved writes and reads of different sizes
+    {
+        let mut stream = connect();
+        let sizes = [1, 10, 100, 50, 5, 200, 1, 1, 1, 500];
+        for &size in &sizes {
+            let data: Vec<u8> = (0..size).map(|i| (i & 0xFF) as u8).collect();
+            stream.write_all(&data).expect("Interleaved write failed");
+            let mut response = vec![0u8; size];
+            stream.read_exact(&mut response).expect("Interleaved read failed");
+            assert_eq!(response, data, "Interleaved echo failed for size {size}");
+        }
+    }
+
+    // Test 7: Multiple concurrent connections
+    {
+        let handles: Vec<_> = (0..5)
+            .map(|conn_id| {
+                let socket = switcher_socket.clone();
+                thread::spawn(move || {
+                    let mut stream = UnixStream::connect(&socket).expect("Failed to connect");
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+
+                    for i in 0..20u8 {
+                        let data = [conn_id as u8, i, conn_id as u8 ^ i];
+                        stream.write_all(&data).expect("Concurrent write failed");
+                        let mut response = [0u8; 3];
+                        stream.read_exact(&mut response).expect("Concurrent read failed");
+                        assert_eq!(response, data, "Concurrent echo failed");
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().expect("Concurrent test thread panicked");
+        }
+    }
+
+    // Clean up
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+    child.wait().expect("Failed to wait for child");
+}
