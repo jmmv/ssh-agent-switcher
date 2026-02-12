@@ -60,7 +60,7 @@ fn set_umask(umask: libc::mode_t) -> UmaskGuard {
 /// Creates the agent socket to listen on.
 ///
 /// This makes sure that the socket is only accessible by the current user.
-fn create_listener(socket_path: &Path) -> Result<UnixListener> {
+pub fn create_listener(socket_path: &Path) -> Result<UnixListener> {
     // Ensure the socket is not group nor world readable so that we don't expose the real socket
     // indirectly to other users.
     let _guard = set_umask(0o177);
@@ -108,15 +108,20 @@ fn handle_connection(
 
 /// Runs the core logic of the app.
 ///
-/// This serves the SSH agent socket on `socket_path` and looks for sshd sockets in `agents_dirs`.
+/// This serves the SSH agent socket using the provided `listener` and looks for sshd sockets
+/// in `agents_dirs`.
 ///
-/// The `pid_file` needs to be passed in for cleanup purposes.
-pub fn run(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<()> {
+/// The `pid_file` is needed for cleanup purposes.
+pub fn run(listener: UnixListener, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<()> {
+    let socket_path = listener
+        .local_addr()
+        .ok()
+        .and_then(|addr| addr.as_pathname().map(|p| p.to_path_buf()))
+        .ok_or_else(|| "Cannot determine socket path from listener".to_string())?;
+
     let home = env::var("HOME").map(|v| Some(PathBuf::from(v))).unwrap_or(None);
     let uid = unsafe { libc::getuid() };
     let agents_dirs: Arc<[PathBuf]> = agents_dirs.into();
-
-    let listener = create_listener(&socket_path)?;
 
     // Set up signal handling with the atomic flag + reconnect pattern
     let shutdown = Arc::new(AtomicBool::new(false));

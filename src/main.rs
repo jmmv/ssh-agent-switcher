@@ -27,6 +27,7 @@ use daemonize::{Daemonize, Outcome};
 use getoptsargs::prelude::*;
 use log::info;
 use std::fs::{self, File};
+use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::time::Duration;
 use std::{env, io};
@@ -164,20 +165,23 @@ fn app_setup(builder: Builder) -> Builder {
         .optopt("", "socket-path", "path to the socket to listen on", "path")
 }
 
-fn daemon_parent(socket_path: PathBuf, log_file: PathBuf, pid_file: PathBuf) -> Result<i32> {
+fn daemon_parent(log_file: PathBuf, pid_file: PathBuf) -> Result<i32> {
     info!("Log file: {}", log_file.display());
     info!("PID file: {}", pid_file.display());
+    // Socket is already created before daemonizing, so we only wait for the PID file
     let pid_content =
         ssh_agent_switcher::wait_for_file(&pid_file, MAX_CHILD_WAIT, fs::read_to_string)
             .map_err(|e| anyhow!("Daemon failed to start on time: {}", e))?;
     info!("PID is: {}", pid_content.trim());
-    let _ = ssh_agent_switcher::wait_for_file(&socket_path, MAX_CHILD_WAIT, fs::metadata)
-        .map_err(|e| anyhow!("Daemon failed to start on time: {}", e))?;
     Ok(0)
 }
 
-fn daemon_child(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<i32> {
-    if let Err(e) = ssh_agent_switcher::run(socket_path, agents_dirs, pid_file) {
+fn daemon_child(
+    listener: UnixListener,
+    agents_dirs: &[PathBuf],
+    pid_file: PathBuf,
+) -> Result<i32> {
+    if let Err(e) = ssh_agent_switcher::run(listener, agents_dirs, pid_file) {
         bail!("{}", e);
     }
     Ok(0)
@@ -191,6 +195,10 @@ fn app_main(matches: Matches) -> Result<i32> {
     let pid_file = get_pid_file(&matches, &xdg_dirs)?;
     let socket_path = get_socket_path(&matches)?;
 
+    // Create the listener early so any errors are detected before daemonizing
+    let listener = ssh_agent_switcher::create_listener(&socket_path)
+        .map_err(|e| anyhow!("{}", e))?;
+
     if matches.opt_present("daemon") {
         let log =
             File::options().append(true).create(true).open(&log_file).map_err(|e| {
@@ -200,27 +208,31 @@ fn app_main(matches: Matches) -> Result<i32> {
         match Daemonize::new().pid_file(&pid_file).stderr(log).execute() {
             Outcome::Parent(Ok(_parent)) => {
                 init_env_logger(&matches.program_name);
-                daemon_parent(socket_path, log_file, pid_file)
+                daemon_parent(log_file, pid_file)
             }
             Outcome::Parent(Err(e)) => {
                 bail!("Failed to become daemon: {}", e);
             }
             Outcome::Child(Ok(_child)) => {
                 init_env_logger(&matches.program_name);
-                daemon_child(socket_path, &agents_dirs, pid_file)
+                daemon_child(listener, &agents_dirs, pid_file)
             }
             Outcome::Child(Err(e)) => {
                 let msg = e.to_string();
                 if !msg.contains("unable to lock pid file") {
+                    // Clean up the socket we created before failing
+                    let _ = fs::remove_file(&socket_path);
                     bail!("Failed to become daemon: {}", e);
                 }
-                Ok(0) // Already running.
+                // Already running - clean up the socket we created
+                let _ = fs::remove_file(&socket_path);
+                Ok(0)
             }
         }
     } else {
         init_env_logger(&matches.program_name);
         info!("Running in the foreground: ignoring --log-file and --pid-file");
-        daemon_child(socket_path, &agents_dirs, pid_file)
+        daemon_child(listener, &agents_dirs, pid_file)
     }
 }
 
