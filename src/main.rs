@@ -25,6 +25,7 @@
 
 use daemonize::{Daemonize, Outcome};
 use getoptsargs::prelude::*;
+use listenfd::ListenFd;
 use log::info;
 use std::fs::{self, File};
 use std::os::unix::net::UnixListener;
@@ -180,8 +181,9 @@ fn daemon_child(
     listener: UnixListener,
     agents_dirs: &[PathBuf],
     pid_file: PathBuf,
+    systemd_activated: bool,
 ) -> Result<i32> {
-    if let Err(e) = ssh_agent_switcher::run(listener, agents_dirs, pid_file) {
+    if let Err(e) = ssh_agent_switcher::run(listener, agents_dirs, pid_file, systemd_activated) {
         bail!("{}", e);
     }
     Ok(0)
@@ -193,13 +195,29 @@ fn app_main(matches: Matches) -> Result<i32> {
     let agents_dirs = get_agents_dirs(&matches)?;
     let log_file = get_log_file(&matches, &xdg_dirs)?;
     let pid_file = get_pid_file(&matches, &xdg_dirs)?;
-    let socket_path = get_socket_path(&matches)?;
 
-    // Create the listener early so any errors are detected before daemonizing
-    let listener = ssh_agent_switcher::create_listener(&socket_path)
-        .map_err(|e| anyhow!("{}", e))?;
+    // Check for systemd socket activation first
+    let mut listenfd = ListenFd::from_env();
+    let (listener, systemd_activated) = if let Some(listener) = listenfd.take_unix_listener(0)? {
+        if matches.opt_present("socket-path") {
+            bail!("Cannot use --socket-path with systemd socket activation");
+        }
+        info!("Using systemd socket activation");
+        (listener, true)
+    } else {
+        // No systemd socket, create our own
+        let socket_path = get_socket_path(&matches)?;
+        let listener = ssh_agent_switcher::create_listener(&socket_path)
+            .map_err(|e| anyhow!("{}", e))?;
+        (listener, false)
+    };
 
     if matches.opt_present("daemon") {
+        if systemd_activated {
+            bail!("Cannot use --daemon with systemd socket activation");
+        }
+
+        let socket_path = get_socket_path(&matches)?;
         let log =
             File::options().append(true).create(true).open(&log_file).map_err(|e| {
                 anyhow!("Failed to open/create log file {}: {}", log_file.display(), e)
@@ -215,7 +233,7 @@ fn app_main(matches: Matches) -> Result<i32> {
             }
             Outcome::Child(Ok(_child)) => {
                 init_env_logger(&matches.program_name);
-                daemon_child(listener, &agents_dirs, pid_file)
+                daemon_child(listener, &agents_dirs, pid_file, systemd_activated)
             }
             Outcome::Child(Err(e)) => {
                 let msg = e.to_string();
@@ -231,8 +249,10 @@ fn app_main(matches: Matches) -> Result<i32> {
         }
     } else {
         init_env_logger(&matches.program_name);
-        info!("Running in the foreground: ignoring --log-file and --pid-file");
-        daemon_child(listener, &agents_dirs, pid_file)
+        if !systemd_activated {
+            info!("Running in the foreground: ignoring --log-file and --pid-file");
+        }
+        daemon_child(listener, &agents_dirs, pid_file, systemd_activated)
     }
 }
 

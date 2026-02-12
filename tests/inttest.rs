@@ -5,7 +5,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -48,19 +48,32 @@ fn has_ssh_agent() -> bool {
 
 /// Helper to run switcher and get its PID for cleanup
 struct SwitcherProcess {
-    pid: libc::pid_t,
+    child: Child,
     socket_path: PathBuf,
 }
 
 impl SwitcherProcess {
-    fn kill(&self) {
-        send_signal(self.pid, libc::SIGTERM);
+    fn new(child: Child, socket_path: PathBuf) -> Self {
+        Self { child, socket_path }
     }
 }
 
 impl Drop for SwitcherProcess {
     fn drop(&mut self) {
-        self.kill();
+        send_signal(self.child.id() as libc::pid_t, libc::SIGTERM);
+        // Use try_wait with timeout to avoid hanging if process doesn't exit
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(2);
+        while start.elapsed() < timeout {
+            match self.child.try_wait() {
+                Ok(Some(_)) => break, // Process exited
+                Ok(None) => thread::sleep(Duration::from_millis(10)), // Still running
+                Err(_) => break, // Error checking status
+            }
+        }
+        // If still running after timeout, force kill
+        let _ = self.child.kill();
+        let _ = self.child.wait();
         wait_for_path_gone(&self.socket_path, Duration::from_secs(2));
     }
 }
@@ -219,10 +232,7 @@ impl PreOpenssh101Env {
         Some(Self {
             _temp_dir: temp_dir,
             _agent_pid: agent_pid,
-            _switcher: SwitcherProcess {
-                pid: child.id() as libc::pid_t,
-                socket_path: switcher_socket.clone(),
-            },
+            _switcher: SwitcherProcess::new(child, switcher_socket.clone()),
             switcher_socket,
             log_file,
         })
@@ -431,10 +441,7 @@ impl Openssh101Env {
         Some(Self {
             _temp_dir: temp_dir,
             _agent_pid: agent_pid,
-            _switcher: SwitcherProcess {
-                pid: child.id() as libc::pid_t,
-                socket_path: switcher_socket.clone(),
-            },
+            _switcher: SwitcherProcess::new(child, switcher_socket.clone()),
             switcher_socket,
             sockets_root,
             log_file,

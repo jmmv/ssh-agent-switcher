@@ -549,3 +549,4 @@ fn test_communication_patterns() {
     }
     child.wait().expect("Failed to wait for child");
 }
+

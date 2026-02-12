@@ -111,8 +111,14 @@ fn handle_connection(
 /// This serves the SSH agent socket using the provided `listener` and looks for sshd sockets
 /// in `agents_dirs`.
 ///
-/// The `pid_file` is needed for cleanup purposes.
-pub fn run(listener: UnixListener, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<()> {
+/// The `pid_file` is needed for cleanup purposes. If `systemd_activated` is true, the socket
+/// file will not be removed on exit (systemd owns it).
+pub fn run(
+    listener: UnixListener,
+    agents_dirs: &[PathBuf],
+    pid_file: PathBuf,
+    systemd_activated: bool,
+) -> Result<()> {
     let socket_path = listener
         .local_addr()
         .ok()
@@ -153,7 +159,11 @@ pub fn run(listener: UnixListener, agents_dirs: &[PathBuf], pid_file: PathBuf) -
         match listener.accept() {
             Ok((socket, _addr)) => {
                 if shutdown.load(Ordering::SeqCst) {
-                    info!("Shutting down and removing {}", socket_path.display());
+                    if systemd_activated {
+                        info!("Shutting down (systemd owns {})", socket_path.display());
+                    } else {
+                        info!("Shutting down and removing {}", socket_path.display());
+                    }
                     break;
                 }
 
@@ -164,7 +174,11 @@ pub fn run(listener: UnixListener, agents_dirs: &[PathBuf], pid_file: PathBuf) -
             }
             Err(e) => {
                 if shutdown.load(Ordering::SeqCst) {
-                    info!("Shutting down and removing {}", socket_path.display());
+                    if systemd_activated {
+                        info!("Shutting down (systemd owns {})", socket_path.display());
+                    } else {
+                        info!("Shutting down and removing {}", socket_path.display());
+                    }
                     break;
                 }
                 warn!("Failed to accept connection: {}", e);
@@ -173,7 +187,10 @@ pub fn run(listener: UnixListener, agents_dirs: &[PathBuf], pid_file: PathBuf) -
     }
     debug!("Main loop exited");
 
-    let _ = fs::remove_file(&socket_path);
+    // Don't remove socket if systemd owns it
+    if !systemd_activated {
+        let _ = fs::remove_file(&socket_path);
+    }
     // Because we catch signals, daemonize doesn't properly clean up the PID file so we have
     // to do it ourselves.
     let _ = fs::remove_file(&pid_file);

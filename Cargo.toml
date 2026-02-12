@@ -14,6 +14,7 @@ edition = "2024"
 [dependencies]
 daemonize = "0.5"
 libc = "0.2"
+listenfd = "1"
 log = "0.4"
 signal-hook = "0.3"
 xdg = "3.0"
