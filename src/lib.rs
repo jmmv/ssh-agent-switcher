@@ -24,14 +24,17 @@
 //! Serves a Unix domain socket that proxies connections to any valid SSH agent provided by sshd.
 
 use log::{debug, info, warn};
+use signal_hook::consts::{SIGHUP, SIGINT, SIGQUIT, SIGTERM};
+use signal_hook::iterator::Signals;
 use std::env;
 use std::fs;
 use std::io;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
-use tokio::net::{UnixListener, UnixStream};
-use tokio::select;
-use tokio::signal::unix::{SignalKind, signal};
 
 mod find;
 
@@ -57,7 +60,7 @@ fn set_umask(umask: libc::mode_t) -> UmaskGuard {
 /// Creates the agent socket to listen on.
 ///
 /// This makes sure that the socket is only accessible by the current user.
-fn create_listener(socket_path: &Path) -> Result<UnixListener> {
+pub fn create_listener(socket_path: &Path) -> Result<UnixListener> {
     // Ensure the socket is not group nor world readable so that we don't expose the real socket
     // indirectly to other users.
     let _guard = set_umask(0o177);
@@ -66,73 +69,128 @@ fn create_listener(socket_path: &Path) -> Result<UnixListener> {
         .map_err(|e| format!("Cannot listen on {}: {}", socket_path.display(), e))
 }
 
+/// Copies data bidirectionally between two streams until one side closes.
+fn handle_bi_socket_forwarding(client: UnixStream, agent: UnixStream) -> io::Result<()> {
+    let mut client_read = client;
+    let mut agent_read = agent;
+    let mut client_write = client_read.try_clone()?;
+    let mut agent_write = agent_read.try_clone()?;
+
+    let t1 = thread::spawn(move || io::copy(&mut client_read, &mut agent_write));
+    let t2 = thread::spawn(move || io::copy(&mut agent_read, &mut client_write));
+
+    // Wait for either direction to finish (one side closed)
+    let r1 = t1.join().map_err(|_| io::Error::other("thread panicked"))?;
+    let r2 = t2.join().map_err(|_| io::Error::other("thread panicked"))?;
+
+    r1.and(r2).map(|_| ())
+}
+
 /// Handles one incoming connection on `client`.
-async fn handle_connection(
-    mut client: UnixStream,
-    agents_dirs: &[PathBuf],
-    home: Option<&Path>,
+fn handle_connection(
+    client: UnixStream,
+    agents_dirs: Arc<[PathBuf]>,
+    home: Option<PathBuf>,
     uid: libc::uid_t,
-) -> Result<()> {
-    let mut agent = match find::find_socket(agents_dirs, home, uid).await {
+) {
+    let agent = match find::find_socket(&agents_dirs, home.as_deref(), uid) {
         Some(socket) => socket,
         None => {
-            return Err("No agent found; cannot proxy request".to_owned());
+            warn!("Dropping connection: no agent found");
+            return;
         }
     };
-    let result = tokio::io::copy_bidirectional(&mut client, &mut agent)
-        .await.map(|_| ())
-        .map_err(|e| format!("{}", e));
+    if let Err(e) = handle_bi_socket_forwarding(client, agent) {
+        warn!("Connection error: {}", e);
+    }
     debug!("Closing client connection");
-    result
 }
 
 /// Runs the core logic of the app.
 ///
-/// This serves the SSH agent socket on `socket_path` and looks for sshd sockets in `agents_dirs`.
+/// This serves the SSH agent socket using the provided `listener` and looks for sshd sockets
+/// in `agents_dirs`.
 ///
-/// The `pid_file` needs to be passed in for cleanup purposes.
-pub async fn run(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<()> {
+/// The `pid_file` is needed for cleanup purposes. If `systemd_activated` is true, the socket
+/// file will not be removed on exit (systemd owns it).
+pub fn run(
+    listener: UnixListener,
+    agents_dirs: &[PathBuf],
+    pid_file: PathBuf,
+    systemd_activated: bool,
+) -> Result<()> {
+    let socket_path = listener
+        .local_addr()
+        .ok()
+        .and_then(|addr| addr.as_pathname().map(|p| p.to_path_buf()))
+        .ok_or_else(|| "Cannot determine socket path from listener".to_string())?;
+
     let home = env::var("HOME").map(|v| Some(PathBuf::from(v))).unwrap_or(None);
     let uid = unsafe { libc::getuid() };
+    let agents_dirs: Arc<[PathBuf]> = agents_dirs.into();
 
-    let mut sighup = signal(SignalKind::hangup())
-        .map_err(|e| format!("Failed to install SIGHUP handler: {}", e))?;
-    let mut sigint = signal(SignalKind::interrupt())
-        .map_err(|e| format!("Failed to install SIGINT handler: {}", e))?;
-    let mut sigquit = signal(SignalKind::quit())
-        .map_err(|e| format!("Failed to install SIGQUIT handler: {}", e))?;
-    let mut sigterm = signal(SignalKind::terminate())
-        .map_err(|e| format!("Failed to install SIGTERM handler: {}", e))?;
+    // Set up signal handling with the atomic flag + reconnect pattern
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = Arc::clone(&shutdown);
+    let socket_path_clone = socket_path.clone();
 
-    let listener = create_listener(&socket_path)?;
+    let mut signals = Signals::new([SIGHUP, SIGINT, SIGQUIT, SIGTERM])
+        .map_err(|e| format!("Failed to install signal handlers: {}", e))?;
+
+    thread::spawn(move || {
+        for sig in signals.forever() {
+            match sig {
+                SIGHUP => {
+                    // Reload - currently a no-op
+                }
+                SIGINT | SIGQUIT | SIGTERM => {
+                    shutdown_clone.store(true, Ordering::SeqCst);
+                    // Connect to our own socket to wake up the accept() call
+                    let _ = UnixStream::connect(&socket_path_clone);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
 
     debug!("Entering main loop");
-    let mut stop = None;
-    while stop.is_none() {
-        select! {
-            result = listener.accept() => match result {
-                Ok((socket, _addr)) => {
-                    debug!("Connection accepted");
-                    // TODO(jmmv): Connections are handled sequentially.  This is... fine.
-                    if let Err(e) = handle_connection(socket, agents_dirs, home.as_deref(), uid).await {
-                        warn!("Dropping connection due to error: {}", e);
+    loop {
+        match listener.accept() {
+            Ok((socket, _addr)) => {
+                if shutdown.load(Ordering::SeqCst) {
+                    if systemd_activated {
+                        info!("Shutting down (systemd owns {})", socket_path.display());
+                    } else {
+                        info!("Shutting down and removing {}", socket_path.display());
                     }
+                    break;
                 }
-                Err(e) => warn!("Failed to accept connection: {}", e),
-            },
 
-            _ = sighup.recv() => (),
-            _ = sigint.recv() => stop = Some("SIGINT"),
-            _ = sigquit.recv() => stop = Some("SIGQUIT"),
-            _ = sigterm.recv() => stop = Some("SIGTERM"),
+                debug!("Connection accepted");
+                let agents_dirs = Arc::clone(&agents_dirs);
+                let home = home.clone();
+                thread::spawn(move || handle_connection(socket, agents_dirs, home, uid));
+            }
+            Err(e) => {
+                if shutdown.load(Ordering::SeqCst) {
+                    if systemd_activated {
+                        info!("Shutting down (systemd owns {})", socket_path.display());
+                    } else {
+                        info!("Shutting down and removing {}", socket_path.display());
+                    }
+                    break;
+                }
+                warn!("Failed to accept connection: {}", e);
+            }
         }
     }
     debug!("Main loop exited");
 
-    let stop = stop.expect("Loop can only exit by setting stop");
-    info!("Shutting down due to {} and removing {}", stop, socket_path.display());
-
-    let _ = fs::remove_file(&socket_path);
+    // Don't remove socket if systemd owns it
+    if !systemd_activated {
+        let _ = fs::remove_file(&socket_path);
+    }
     // Because we catch signals, daemonize doesn't properly clean up the PID file so we have
     // to do it ourselves.
     let _ = fs::remove_file(&pid_file);
