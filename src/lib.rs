@@ -28,6 +28,7 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
@@ -154,6 +155,7 @@ pub fn wait_for_file<P: AsRef<Path> + Copy, T>(
                 return Ok(result);
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                thread::sleep(Duration::from_millis(1));
                 pending_wait -= Duration::from_millis(1);
             }
             Err(e) => {
