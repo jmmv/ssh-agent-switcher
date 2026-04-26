@@ -13,6 +13,11 @@ repos:
     - id: trailing-whitespace
 - repo: local
   hooks:
+    - id: cargo-fmt
+      name: "cargo fmt"
+      entry: cargo fmt --check --
+      language: system
+      types: [rust]
     - id: do-not-submit
       name: "DO NOT SUBMIT check"
       entry: bash -c 'if [ $# -gt 0 ]; then ! grep "DO NOT SUBMIT" "$@"; fi'

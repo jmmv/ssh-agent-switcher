@@ -234,12 +234,13 @@ pub(super) async fn find_socket(
 ) -> Option<UnixStream> {
     for dir in dirs {
         if let Some(home) = home
-            && dir.starts_with(home) {
-                debug!("Looking for an agent socket in {} with HOME naming scheme", dir.display());
-                if let Some(socket) = find_in_subdir(dir).await {
-                    return Some(socket);
-                }
+            && dir.starts_with(home)
+        {
+            debug!("Looking for an agent socket in {} with HOME naming scheme", dir.display());
+            if let Some(socket) = find_in_subdir(dir).await {
+                return Some(socket);
             }
+        }
 
         debug!("Looking for an agent socket in {} subdirs", dir.display());
         if let Some(socket) = find_in_shared_dir(dir, uid).await {
