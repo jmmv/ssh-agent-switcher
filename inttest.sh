@@ -64,12 +64,13 @@ standalone_fixture() {
 
     shtk_unittest_add_test default_socket_path
     default_socket_path_test() {
-        USER=fake-user "${SSH_AGENT_SWITCHER}" 2>switcher.log &
+        local user="fake-user-$$"
+        local socket="/tmp/ssh-agent.${user}"
+
+        USER="${user}" "${SSH_AGENT_SWITCHER}" 2>switcher.log &
         echo "${!}" >pid  # For teardown.
 
-        while [ ! -e /tmp/ssh-agent.fake-user ]; do
-            sleep 0.01
-        done
+        wait_for_socket "${socket}"
     }
 
     shtk_unittest_add_test ignore_sighup
