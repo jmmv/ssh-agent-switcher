@@ -4,7 +4,7 @@
 
 **STILL UNDER DEVELOPMENT; NOT RELEASED YET.**
 
-*   No changes recorded.
+*   Fixed race conditions in tests.
 
 ## Changes in version 1.0.1
 

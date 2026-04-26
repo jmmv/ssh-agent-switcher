@@ -26,6 +26,17 @@ shtk_import unittest
 export RUST_LOG=trace
 SSH_AGENT_SWITCHER="../target/${MODE-debug}/ssh-agent-switcher"
 
+wait_for_socket() {
+    local socket="${1}"; shift
+
+    local i=0
+    while [ ! -S "${socket}" ]; do
+        [ "${i}" -lt 1000 ] || fail "Socket was not created on time: ${socket}"
+        sleep 0.01
+        i=$((i + 1))
+    done
+}
+
 shtk_unittest_add_fixture standalone
 standalone_fixture() {
     setup() {
@@ -111,6 +122,8 @@ integration_pre_openssh_10_1_fixture() {
             2>switcher.log &
         SWITCHER_AGENT_PID="${!}"
 
+        wait_for_socket "${SWITCHER_AUTH_SOCK}"
+
         export SSH_AUTH_SOCK="${SWITCHER_AUTH_SOCK}"
     }
 
@@ -193,6 +206,8 @@ integration_openssh_10_1_fixture() {
             --agents-dirs "/non-existent-1:${SOCKETS_ROOT}:/non-existent-2" \
             2>switcher.log &
         SWITCHER_AGENT_PID="${!}"
+
+        wait_for_socket "${SWITCHER_AUTH_SOCK}"
 
         export SSH_AUTH_SOCK="${SWITCHER_AUTH_SOCK}"
     }
