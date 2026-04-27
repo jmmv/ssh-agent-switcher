@@ -32,8 +32,35 @@ use std::time::Duration;
 use std::{env, io};
 use xdg::BaseDirectories;
 
-/// Maximum amount of time to wait for the child process to start when daemonization is enabled.
-const MAX_CHILD_WAIT: Duration = Duration::from_secs(10);
+/// Returns the maximum amount of time to wait for the child process to start.
+fn get_max_child_wait() -> Result<Duration> {
+    /// Maximum amount of time to wait for the child process to start when daemonization is enabled.
+    const MAX_CHILD_WAIT: Duration = Duration::from_secs(10);
+
+    /// Environment variable with which to override `MAX_CHILD_WAIT`.
+    const MAX_CHILD_WAIT_SECS_ENV: &str = "SSH_AGENT_SWITCHER_MAX_CHILD_WAIT_SECS";
+
+    let value = match env::var(MAX_CHILD_WAIT_SECS_ENV) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(MAX_CHILD_WAIT),
+        Err(e) => bail!("{} variable is set but is not valid: {}", MAX_CHILD_WAIT_SECS_ENV, e),
+    };
+
+    let secs = value.parse::<u64>().map_err(|e| {
+        anyhow!(
+            "{} variable must contain a positive integer number of seconds: {}",
+            MAX_CHILD_WAIT_SECS_ENV,
+            e
+        )
+    })?;
+    if secs == 0 {
+        bail!(
+            "{} variable must contain a positive integer number of seconds",
+            MAX_CHILD_WAIT_SECS_ENV
+        );
+    }
+    Ok(Duration::from_secs(secs))
+}
 
 /// Checks if the required `name` variable is present and returns its value.
 fn get_required_env_var(name: &str) -> Result<String> {
@@ -164,14 +191,19 @@ fn app_setup(builder: Builder) -> Builder {
         .optopt("", "socket-path", "path to the socket to listen on", "path")
 }
 
-fn daemon_parent(socket_path: PathBuf, log_file: PathBuf, pid_file: PathBuf) -> Result<i32> {
+fn daemon_parent(
+    socket_path: PathBuf,
+    log_file: PathBuf,
+    pid_file: PathBuf,
+    max_child_wait: Duration,
+) -> Result<i32> {
     info!("Log file: {}", log_file.display());
     info!("PID file: {}", pid_file.display());
     let pid_content =
-        ssh_agent_switcher::wait_for_file(&pid_file, MAX_CHILD_WAIT, fs::read_to_string)
+        ssh_agent_switcher::wait_for_file(&pid_file, max_child_wait, fs::read_to_string)
             .map_err(|e| anyhow!("Daemon failed to start on time: {}", e))?;
     info!("PID is: {}", pid_content.trim());
-    let _ = ssh_agent_switcher::wait_for_file(&socket_path, MAX_CHILD_WAIT, fs::metadata)
+    let _ = ssh_agent_switcher::wait_for_file(&socket_path, max_child_wait, fs::metadata)
         .map_err(|e| anyhow!("Daemon failed to start on time: {}", e))?;
     Ok(0)
 }
@@ -196,6 +228,7 @@ fn app_main(matches: Matches) -> Result<i32> {
     let socket_path = get_socket_path(&matches)?;
 
     if matches.opt_present("daemon") {
+        let max_child_wait = get_max_child_wait()?;
         let log =
             File::options().append(true).create(true).open(&log_file).map_err(|e| {
                 anyhow!("Failed to open/create log file {}: {}", log_file.display(), e)
@@ -204,7 +237,7 @@ fn app_main(matches: Matches) -> Result<i32> {
         match Daemonize::new().pid_file(&pid_file).stderr(log).execute() {
             Outcome::Parent(Ok(_parent)) => {
                 init_env_logger(&matches.program_name);
-                daemon_parent(socket_path, log_file, pid_file)
+                daemon_parent(socket_path, log_file, pid_file, max_child_wait)
             }
             Outcome::Parent(Err(e)) => {
                 bail!("Failed to become daemon: {}", e);

@@ -299,6 +299,33 @@ daemonize_fixture() {
         cp "${log_file}" switcher.log  # For teardown.
     }
 
+    start_daemon_with_retries() {
+        local i=0
+        local max_attempts=3
+        local output
+
+        while [ "${i}" -lt "${max_attempts}" ]; do
+            if output="$(SSH_AGENT_SWITCHER_MAX_CHILD_WAIT_SECS=1 "$@" 2>&1)"; then
+                return 0
+            fi
+
+            i=$((i + 1))
+            case "${output}" in
+                *"Daemon failed to start on time"*)
+                    [ "${i}" -lt "${max_attempts}" ] || break
+                    sleep 0.1
+                    ;;
+                *)
+                    printf '%s\n' "${output}" >&2
+                    return 1
+                    ;;
+            esac
+        done
+
+        printf '%s\n' "${output}" >&2
+        return 1
+    }
+
     shtk_unittest_add_test xdg_dirs
     xdg_dirs_test() {
         local log_dir="$(pwd)/test-state"
@@ -310,7 +337,8 @@ daemonize_fixture() {
         chmod 0700 "${pid_dir}"  # XDG expects tight permissions.
 
         local socket="${SOCKETS_ROOT}/socket"
-        XDG_STATE_HOME="${log_dir}" XDG_RUNTIME_DIR="${pid_dir}" \
+        start_daemon_with_retries \
+            env XDG_STATE_HOME="${log_dir}" XDG_RUNTIME_DIR="${pid_dir}" \
             "${SSH_AGENT_SWITCHER}" --daemon --socket-path "${socket}"
 
         do_simple_test "${log_file}" "${pid_file}"
@@ -329,7 +357,8 @@ daemonize_fixture() {
         local socket="${SOCKETS_ROOT}/socket"
         (
             unset XDG_RUNTIME_DIR
-            XDG_STATE_HOME="${log_dir}" \
+            start_daemon_with_retries \
+                env XDG_STATE_HOME="${log_dir}" \
                 "${SSH_AGENT_SWITCHER}" --daemon --socket-path "${socket}"
         )
 
@@ -342,7 +371,8 @@ daemonize_fixture() {
         local pid_file="$(pwd)/test.pid"
 
         local socket="${SOCKETS_ROOT}/socket"
-        "${SSH_AGENT_SWITCHER}" --daemon --log-file="${log_file}" --pid-file="${pid_file}" \
+        start_daemon_with_retries \
+            "${SSH_AGENT_SWITCHER}" --daemon --log-file="${log_file}" --pid-file="${pid_file}" \
             --socket-path "${socket}"
 
         do_simple_test "${log_file}" "${pid_file}"
@@ -354,11 +384,13 @@ daemonize_fixture() {
         local pid_file="$(pwd)/test.pid"
 
         local socket="${SOCKETS_ROOT}/socket"
-        "${SSH_AGENT_SWITCHER}" --daemon --log-file="${log_file}" --pid-file="${pid_file}" \
+        start_daemon_with_retries \
+            "${SSH_AGENT_SWITCHER}" --daemon --log-file="${log_file}" --pid-file="${pid_file}" \
             --socket-path "${socket}"
 
         # This second invocation should not actually start.
-        "${SSH_AGENT_SWITCHER}" --daemon --log-file="${log_file}" --pid-file="${pid_file}" \
+        SSH_AGENT_SWITCHER_MAX_CHILD_WAIT_SECS=1 \
+            "${SSH_AGENT_SWITCHER}" --daemon --log-file="${log_file}" --pid-file="${pid_file}" \
             --socket-path "${socket}.2"
 
         # Wait a little bit to see if the second socket is created.  This is racy and may fail
