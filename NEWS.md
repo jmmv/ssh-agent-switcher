@@ -2,7 +2,7 @@
 
 ## Changes in version 1.0.2
 
-**STILL UNDER DEVELOPMENT; NOT RELEASED YET.**
+**Released on 2026-04-28.**
 
 *   Fixed race conditions in tests.
 
