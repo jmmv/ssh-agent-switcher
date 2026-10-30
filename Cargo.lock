@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "ssh-agent-switcher"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "daemonize",
  "getoptsargs",
