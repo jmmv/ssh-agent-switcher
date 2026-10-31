@@ -45,6 +45,7 @@ struct UmaskGuard {
 }
 
 impl Drop for UmaskGuard {
+    /// Restores the umask saved by this guard.
     fn drop(&mut self) {
         let _ = unsafe { libc::umask(self.old_umask) };
     }
