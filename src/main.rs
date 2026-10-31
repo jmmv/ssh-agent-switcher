@@ -28,7 +28,7 @@ use getoptsargs::prelude::*;
 use log::info;
 use std::fs::{self, File};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, io};
 use xdg::BaseDirectories;
 
@@ -58,6 +58,18 @@ fn get_max_child_wait() -> Result<Duration> {
             "{} variable must contain a positive integer number of seconds",
             MAX_CHILD_WAIT_SECS_ENV
         );
+    }
+    Ok(Duration::from_secs(secs))
+}
+
+/// Bounds selection without limiting operations that may require user confirmation.
+fn get_probe_timeout(matches: &Matches) -> Result<Duration> {
+    let value = matches.opt_str("probe-timeout-secs").unwrap_or_else(|| "5".to_owned());
+    let secs = value.parse::<u64>().map_err(|_| {
+        anyhow!("--probe-timeout-secs must contain a positive integer number of seconds")
+    })?;
+    if secs == 0 || Instant::now().checked_add(Duration::from_secs(secs)).is_none() {
+        bail!("--probe-timeout-secs must contain a positive, representable number of seconds");
     }
     Ok(Duration::from_secs(secs))
 }
@@ -190,6 +202,12 @@ fn app_setup(builder: Builder) -> Builder {
         .optflag("", "daemon", "run in the background")
         .optopt("", "log-file", "path to the file where to write logs", "path")
         .optopt("", "pid-file", "path to the PID file to create", "path")
+        .optopt(
+            "",
+            "probe-timeout-secs",
+            "agent health-probe deadline (default: 5 seconds)",
+            "seconds",
+        )
         .optopt("", "socket-path", "path to the socket to listen on", "path")
 }
 
@@ -212,11 +230,18 @@ fn daemon_parent(
 }
 
 /// Creates the async runtime and runs the daemon until shutdown.
-fn daemon_child(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<i32> {
+fn daemon_child(
+    socket_path: PathBuf,
+    agents_dirs: &[PathBuf],
+    pid_file: PathBuf,
+    probe_timeout: Duration,
+) -> Result<i32> {
     let runtime =
         tokio::runtime::Runtime::new().map_err(|e| anyhow!("Failed to start runtime: {}", e))?;
     runtime.block_on(async move {
-        if let Err(e) = ssh_agent_switcher::run(socket_path, agents_dirs, pid_file).await {
+        if let Err(e) =
+            ssh_agent_switcher::run(socket_path, agents_dirs, pid_file, probe_timeout).await
+        {
             bail!("{}", e);
         }
         Ok(0)
@@ -230,6 +255,7 @@ fn app_main(matches: Matches) -> Result<i32> {
     let agents_dirs = get_agents_dirs(&matches)?;
     let log_file = get_log_file(&matches, &xdg_dirs)?;
     let pid_file = get_pid_file(&matches, &xdg_dirs)?;
+    let probe_timeout = get_probe_timeout(&matches)?;
     let socket_path = get_socket_path(&matches)?;
 
     if matches.opt_present("daemon") {
@@ -249,7 +275,7 @@ fn app_main(matches: Matches) -> Result<i32> {
             }
             Outcome::Child(Ok(_child)) => {
                 init_env_logger(&matches.program_name);
-                daemon_child(socket_path, &agents_dirs, pid_file)
+                daemon_child(socket_path, &agents_dirs, pid_file, probe_timeout)
             }
             Outcome::Child(Err(e)) => {
                 let msg = e.to_string();
@@ -262,7 +288,7 @@ fn app_main(matches: Matches) -> Result<i32> {
     } else {
         init_env_logger(&matches.program_name);
         info!("Running in the foreground: ignoring --log-file and --pid-file");
-        daemon_child(socket_path, &agents_dirs, pid_file)
+        daemon_child(socket_path, &agents_dirs, pid_file, probe_timeout)
     }
 }
 

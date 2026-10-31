@@ -23,4 +23,7 @@ features = ["env_logger"]
 
 [dependencies.tokio]
 version = "1"
-features = ["io-util", "macros", "net", "rt-multi-thread", "signal"]
+features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "time"]
+
+[dev-dependencies]
+tempfile = "3"
