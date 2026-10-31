@@ -8,6 +8,10 @@
     backed by unresponsive SSH connections.  The new `--probe-timeout-secs` flag
     configures the probe deadline.
 
+*   Fixed TOCTOU races when checking agent connections by authenticating the
+    connection's peer.  Connections are rejected if peer credentials are
+    unavailable.
+
 ## Changes in version 1.0.2
 
 **Released on 2026-04-28.**

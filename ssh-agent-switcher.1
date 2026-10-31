@@ -93,6 +93,12 @@ It keeps the first responsive connection and closes the other probe connections.
 A responsive agent may have no keys or refuse the listing request.
 Directory order does not determine which agent wins.
 .Pp
+Before sending a probe, the daemon checks that the connected peer belongs to
+the current user.
+It rejects connections if peer credentials are unavailable.
+These checks use the established connection, so replacing a socket pathname
+after discovery cannot substitute another user's agent.
+.Pp
 Each client stays connected to its selected agent, and keys from different
 agents are not combined.
 The probe deadline applies only to selection; a later network failure can
