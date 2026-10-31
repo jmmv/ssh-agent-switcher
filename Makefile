@@ -46,6 +46,7 @@ $(BIN): $(SRCS)
 
 .PHONY: test
 test: $(BIN) inttest
+	cargo test
 	MODE=$(MODE) ./inttest
 
 inttest: inttest.sh
