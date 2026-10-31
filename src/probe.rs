@@ -82,9 +82,29 @@ fn valid_probe_reply(reply: &[u8]) -> bool {
     rest.is_empty()
 }
 
-/// Tests if a `path` is listening and responds to the public keys list request.
+/// Connects to a same-user peer and tests whether it is responsive.
 async fn probe(path: &Path) -> Result<UnixStream> {
-    let mut socket = UnixStream::connect(path).await?;
+    let socket = UnixStream::connect(path).await?;
+    let peer_uid = socket.peer_cred().map(|credentials| credentials.uid());
+    probe_connection(socket, peer_uid).await
+}
+
+/// Authenticates and probes an established connection; credential lookup errors fail closed.
+async fn probe_connection(
+    mut socket: UnixStream,
+    peer_uid: Result<libc::uid_t>,
+) -> Result<UnixStream> {
+    // Discovery checks pathname metadata, which can change before connect().  Authenticate
+    // the connected endpoint before sending even the probe, then retain this open stream.
+    let uid = unsafe { libc::getuid() };
+    let peer_uid =
+        peer_uid.map_err(|e| error!(e.kind(), "Cannot obtain agent peer credentials: {}", e))?;
+    if peer_uid != uid {
+        return Err(error!(
+            ErrorKind::PermissionDenied,
+            "Agent peer belongs to uid {}, not the current user {}", peer_uid, uid
+        ));
+    }
 
     // The request has a one-byte payload (type 11) and no additional fields.
     socket.write_all(&[0, 0, 0, 1, SSH_AGENTC_REQUEST_IDENTITIES]).await?;
@@ -208,6 +228,61 @@ mod tests {
         ] {
             assert!(!valid_probe_reply(reply));
         }
+    }
+
+    #[tokio::test]
+    async fn test_probe_rejects_foreign_peer_before_sending_data() {
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        let foreign_uid = unsafe { libc::getuid() }.wrapping_add(1);
+        let error = timeout(Duration::from_secs(2), probe_connection(socket, Ok(foreign_uid)))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(peer.read_u8().await.unwrap_err().kind(), ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn test_probe_rejects_unavailable_credentials_before_sending_data() {
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        let credentials = Err(error!(ErrorKind::Unsupported, "Peer credentials unavailable"));
+        let error = timeout(Duration::from_secs(2), probe_connection(socket, credentials))
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+        assert_eq!(peer.read_u8().await.unwrap_err().kind(), ErrorKind::UnexpectedEof);
+    }
+
+    #[tokio::test]
+    async fn test_select_socket_retains_connection_after_path_replacement() {
+        let sockets = Sockets::new();
+        let session = sockets.dir.path().join("ssh-session");
+        fs::create_dir(&session).unwrap();
+        let path = session.join("agent.test");
+
+        let listener = UnixListener::bind(&path).unwrap();
+        let candidates =
+            find_sockets(&[sockets.dir.path().to_owned()], None, unsafe { libc::getuid() });
+        assert_eq!(candidates, BTreeSet::from([path.clone()]));
+
+        let selection = tokio::spawn(select_socket(candidates, Duration::from_secs(2)));
+        let mut peer = accept_probe(&listener).await;
+        peer.write_all(&[0, 0, 0, 1, 5]).await.unwrap();
+        let mut selected =
+            timeout(Duration::from_secs(2), selection).await.unwrap().unwrap().unwrap();
+
+        // Reuse the session pathname after selection.  Traffic must still reach the authenticated
+        // peer, even though a different listener now occupies its path.
+        fs::remove_file(&path).unwrap();
+        fs::remove_dir(&session).unwrap();
+        fs::create_dir(&session).unwrap();
+        let replacement = UnixListener::bind(&path).unwrap();
+        selected.write_all(&[42]).await.unwrap();
+        assert_eq!(timeout(Duration::from_secs(2), peer.read_u8()).await.unwrap().unwrap(), 42);
+        peer.write_all(&[43]).await.unwrap();
+        assert_eq!(timeout(Duration::from_secs(2), selected.read_u8()).await.unwrap().unwrap(), 43);
+        assert!(timeout(Duration::from_millis(50), replacement.accept()).await.is_err());
     }
 
     #[tokio::test]

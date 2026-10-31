@@ -73,4 +73,9 @@ and does not cross any security boundaries.  All this daemon does is expose a
 new socket that only you can access and forwards all communication to another
 socket to which you must already have access.
 
+Before sending any data, ssh-agent-switcher checks that the connected agent peer
+belongs to your user account.  The daemon rejects connections when peer
+credentials cannot be obtained, and keeps the authenticated connection for the
+lifetime of each client.
+
 *Do not run this as root.*
