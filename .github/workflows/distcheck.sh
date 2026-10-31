@@ -1,4 +1,5 @@
 #! /bin/sh
+# shellcheck disable=SC3043 # The supported shells provide local variables.
 # Copyright 2024 Julio Merino.
 # All rights reserved.
 #
@@ -40,7 +41,7 @@ check_srcs() {
     [ -n "${makefile_srcs}" ] || err "Cannot determine RS_SRCS from Makefile"
 
     local actual_srcs
-    actual_srcs="$(echo $(find src -type f | sort))"
+    actual_srcs="$(find src -type f | sort | paste -sd ' ' -)"
 
     [ "${makefile_srcs}" = "${actual_srcs}" ] \
         || err "Makefile SRCS seems to be out of date"
@@ -53,16 +54,21 @@ check_clean() {
 }
 
 check_install() {
-    local root="$(mktemp -d)"
+    local root
+    root="$(mktemp -d)"
+    # Expand root now because it is local to this function.
+    # shellcheck disable=SC2064
     trap "rm -rf '${root}'" EXIT
 
     make install PREFIX="${root}"
     "${root}/bin/ssh-agent-switcher" -h 2>&1 | grep 'Usage: ssh-agent-switcher'
-    local debug_size="$(stat -c '%s' "${root}/bin/ssh-agent-switcher")"
+    local debug_size
+    debug_size="$(stat -c '%s' "${root}/bin/ssh-agent-switcher")"
 
     make install MODE=release PREFIX="${root}"
     "${root}/bin/ssh-agent-switcher" -h 2>&1 | grep 'Usage: ssh-agent-switcher'
-    local release_size="$(stat -c '%s' "${root}/bin/ssh-agent-switcher")"
+    local release_size
+    release_size="$(stat -c '%s' "${root}/bin/ssh-agent-switcher")"
 
     [ "${release_size}" -lt "${debug_size}" ] \
         || err "Release binary is larger than debug binary"

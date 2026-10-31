@@ -1,4 +1,5 @@
 #! /bin/sh
+# shellcheck disable=SC3043 # The supported shells provide local variables.
 # Copyright 2024 Julio Merino.
 # All rights reserved.
 #
@@ -35,6 +36,8 @@ main() {
 
     local tmpdir
     tmpdir="$(mktemp -d)"
+    # Expand tmpdir now because it is local to this function.
+    # shellcheck disable=SC2064
     trap "rm -rf '${tmpdir}'" EXIT HUP INT QUIT TERM
 
     cd "${tmpdir}"
