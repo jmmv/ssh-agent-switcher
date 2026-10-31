@@ -140,6 +140,7 @@ fn get_socket_path(matches: &Matches) -> Result<PathBuf> {
     default_socket_path()
 }
 
+/// Writes help text describing the default paths.
 fn app_extra_help(output: &mut dyn io::Write) -> io::Result<()> {
     if let Ok(agents_dirs) = default_agents_dirs() {
         writeln!(
@@ -172,6 +173,7 @@ fn app_extra_help(output: &mut dyn io::Write) -> io::Result<()> {
     Ok(())
 }
 
+/// Configures application metadata and command-line options.
 fn app_setup(builder: Builder) -> Builder {
     builder
         .bugs("https://github.com/jmmv/ssh-agent-switcher/issues/")
@@ -191,6 +193,7 @@ fn app_setup(builder: Builder) -> Builder {
         .optopt("", "socket-path", "path to the socket to listen on", "path")
 }
 
+/// Waits for the daemon child to create its PID file and listening socket.
 fn daemon_parent(
     socket_path: PathBuf,
     log_file: PathBuf,
@@ -208,6 +211,7 @@ fn daemon_parent(
     Ok(0)
 }
 
+/// Creates the async runtime and runs the daemon until shutdown.
 fn daemon_child(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<i32> {
     let runtime =
         tokio::runtime::Runtime::new().map_err(|e| anyhow!("Failed to start runtime: {}", e))?;
@@ -219,6 +223,7 @@ fn daemon_child(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf
     })
 }
 
+/// Parses runtime settings and starts the daemon in the requested mode.
 fn app_main(matches: Matches) -> Result<i32> {
     let xdg_dirs = BaseDirectories::new();
 
