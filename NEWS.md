@@ -2,7 +2,7 @@
 
 ## Changes in version 1.0.3
 
-**STILL UNDER DEVELOPMENT; NOT RELEASED YET.**
+**Released on 2026-10-31.**
 
 *   Added parallel health probes for forwarded agents to avoid selecting sockets
     backed by unresponsive SSH connections.  The new `--probe-timeout-secs` flag
