@@ -68,6 +68,13 @@ pass_filenames = false
 always_run = true
 
 [[repos.hooks]]
+id = "shellcheck"
+name = "Check shell scripts"
+language = "system"
+entry = "shellcheck"
+files = "\\.sh(\\.in)?$"
+
+[[repos.hooks]]
 id = "do-not-submit"
 name = "Check for [D]O NOT SUBMIT markers"
 language = "system"
