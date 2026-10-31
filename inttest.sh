@@ -26,6 +26,18 @@ shtk_import unittest
 export RUST_LOG=trace
 SSH_AGENT_SWITCHER="../target/${MODE-debug}/ssh-agent-switcher"
 
+wait_for_log() {
+    local pattern="${1}"; shift
+    local log="${1}"; shift
+
+    local i=0
+    while ! grep -q "${pattern}" "${log}"; do
+        [ "${i}" -lt 1000 ] || fail "Log message did not appear on time: ${pattern}"
+        sleep 0.01
+        i=$((i + 1))
+    done
+}
+
 wait_for_socket() {
     local socket="${1}"; shift
 
@@ -60,6 +72,17 @@ standalone_fixture() {
     default_agents_dirs_test() {
         USER=fake-user "${SSH_AGENT_SWITCHER}" -h >switcher.out 2>switcher.log
         expect_file match:"default lookup.*${FAKE_HOME}/.ssh/agent:/tmp" switcher.out
+    }
+
+    shtk_unittest_add_test probe_timeout_option
+    probe_timeout_option_test() {
+        expect_command -o match:"default: 5 seconds" "${SSH_AGENT_SWITCHER}" --help
+
+        local value
+        for value in 0 -1 abc 1.5 18446744073709551615 18446744073709551616; do
+            expect_command -s 1 -e match:"probe-timeout-secs" \
+                "${SSH_AGENT_SWITCHER}" --probe-timeout-secs "${value}"
+        done
     }
 
     shtk_unittest_add_test default_socket_path
@@ -120,6 +143,7 @@ integration_pre_openssh_10_1_fixture() {
         "${SSH_AGENT_SWITCHER}" \
             --socket-path "${SWITCHER_AUTH_SOCK}" \
             --agents-dirs "${SOCKETS_ROOT}" \
+            --probe-timeout-secs 1 \
             2>switcher.log &
         SWITCHER_AGENT_PID="${!}"
 
@@ -136,12 +160,21 @@ integration_pre_openssh_10_1_fixture() {
 
         kill "${SWITCHER_AGENT_PID}"
         # Make sure the daemon deletes the socket on exit.
+        local i=0
         while [ -e "${SWITCHER_AUTH_SOCK}" ]; do
+            [ "${i}" -lt 1000 ] || fail "Daemon did not shut down on time"
             sleep 0.01
+            i=$((i + 1))
         done
+        wait "${SWITCHER_AGENT_PID}"
+
+        if [ -e idle.pid ]; then
+            kill "$(cat idle.pid)" 2>/dev/null || true
+        fi
         expect_file match:"Shutting down.*${SWITCHER_AUTH_SOCK}" switcher.log
 
         . ./agent.env
+        kill -CONT "${SSH_AGENT_PID}"
         kill "${SSH_AGENT_PID}"
 
         rm -rf "${SOCKETS_ROOT}"
@@ -157,6 +190,33 @@ integration_pre_openssh_10_1_fixture() {
     add_identity_test() {
         assert_command -s 0 -o ignore -e ignore ssh-keygen -t rsa -b 1024 -N '' -f ./id_rsa
         expect_command -s 0 -e match:"Identity added" ssh-add ./id_rsa
+    }
+
+    shtk_unittest_add_test probe_timeout
+    probe_timeout_test() {
+        . ./agent.env  # Load the real ssh-agent's PID.
+        export SSH_AUTH_SOCK="${SWITCHER_AUTH_SOCK}"  # But restore the socket to the switcher.
+
+        kill -STOP "${SSH_AGENT_PID}"
+        expect_command -s 1 -e match:"communication with agent failed" ssh-add -l
+        expect_file match:"probe timed out" switcher.log
+
+        kill -CONT "${SSH_AGENT_PID}"
+        expect_command -s 1 -o match:"no identities" ssh-add -l
+    }
+
+    shtk_unittest_add_test concurrent_clients
+    concurrent_clients_test() {
+        # Keep the first client idle throughout the request and teardown to check shutdown too.
+        mkfifo idle.in
+        exec 3<>idle.in
+        nc -U "${SWITCHER_AUTH_SOCK}" <idle.in >idle.out 2>idle.err &
+        echo "${!}" >idle.pid
+        wait_for_log "opened.*${AGENT_AUTH_SOCK}" switcher.log
+
+        expect_command -s 1 -o match:"no identities" ssh-add -l
+        expect_file empty idle.out
+        assert_command kill -0 "$(cat idle.pid)"
     }
 
     shtk_unittest_add_test ignore_unknown_files
@@ -179,7 +239,7 @@ integration_pre_openssh_10_1_fixture() {
         expect_file match:"Ignoring.*/ssh-not-a-dir.*not a directory" switcher.log
         expect_file match:"Ignoring.*/ssh-empty.*No socket" switcher.log
         expect_file match:"Ignoring.*/ssh-foo/unknown.*start with.*agent" switcher.log
-        expect_file match:"Ignoring.*/ssh-bar/agent.not-a-socket.*Cannot connect" switcher.log
+        expect_file match:"Ignoring.*/ssh-bar/agent.not-a-socket.*not a socket" switcher.log
     }
 }
 
@@ -257,8 +317,8 @@ integration_openssh_10_1_fixture() {
         # Ensure that the garbage was ignored for the correct reasons.
         expect_file match:"Ignoring.*/file-unknown.*not start with.*agent." switcher.log
         expect_file match:"Ignoring.*/dir-unknown.*not start with.*agent." switcher.log
-        expect_file match:"Ignoring.*/agent.not-a-socket.*Cannot connect" switcher.log
-        expect_file match:"Ignoring.*/not-a-socket.sshd.foobar.*Cannot connect" switcher.log
+        expect_file match:"Ignoring.*/agent.not-a-socket.*not a socket" switcher.log
+        expect_file match:"Ignoring.*/not-a-socket.sshd.foobar.*not a socket" switcher.log
     }
 }
 

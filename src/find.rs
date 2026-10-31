@@ -21,14 +21,14 @@
 // WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY
 // WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-//! Utilities to find the correct SSH agent socket.
+//! Discovery of candidate SSH agent socket paths.
 
-use log::{debug, info, trace};
+use log::{debug, trace};
+use std::collections::BTreeSet;
+use std::fs;
 use std::io::{ErrorKind, Result};
-use std::os::unix::fs::MetadataExt;
-use std::path::Path;
-use std::{fs, path::PathBuf};
-use tokio::net::UnixStream;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
+use std::path::{Path, PathBuf};
 
 /// Syntactic sugar to instantiate an error.
 #[macro_export]
@@ -42,142 +42,34 @@ macro_rules! error {
     };
 }
 
-/// Attempts to open the socket `path`.
-async fn try_open(path: &Path) -> Result<UnixStream> {
-    let name = path.file_name().expect(
-        "The path comes from joining a directory to one of its entries, so it must have a name",
-    );
-    let name = match name.to_str() {
-        Some(name) => name,
-        None => return Err(error!(ErrorKind::InvalidInput, "Invalid socket path")),
+/// Rejects paths that cannot be sshd agent sockets before connecting.
+fn check_socket(path: &Path) -> Result<()> {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Err(error!(ErrorKind::InvalidInput, "Invalid socket path"));
     };
-
-    let is_pre_openssh_10_1 = name.starts_with("agent.");
-    let is_openssh_10_1 = name.contains(".sshd.");
-    if !is_pre_openssh_10_1 && !is_openssh_10_1 {
+    if !name.starts_with("agent.") && !name.contains(".sshd.") {
         return Err(error!(
             ErrorKind::InvalidInput,
-            "Socket name in does not start with 'agent.' or does not contain '.sshd.'"
+            "Socket name does not start with 'agent.' or contain '.sshd.'"
         ));
     }
-
-    let metadata =
-        fs::metadata(path).map_err(|e| error!(e.kind(), "Failed to get metadata: {}", e))?;
-
-    if (metadata.mode() & libc::S_IFSOCK as u32) == 0 {
+    let metadata = fs::metadata(path)?;
+    if !metadata.file_type().is_socket() {
         return Err(error!(ErrorKind::InvalidInput, "Path is not a socket"));
     }
-
-    let socket = UnixStream::connect(&path)
-        .await
-        .map_err(|e| error!(e.kind(), "Cannot connect to socket: {}", e))?;
-
-    Ok(socket)
+    Ok(())
 }
 
-/// Scans the contents of `dir`, which should point to a session directory created by sshd, looks
-/// for a valid socket, opens it, and returns the connection to the agent.
-///
-/// This tries all possible files in search for a socket and only returns an error if no valid
-/// and alive candidate can be found.
-async fn find_in_subdir(dir: &Path) -> Option<UnixStream> {
+/// Adds candidate agent socket paths found directly in `dir`.
+fn find_in_subdir(dir: &Path, candidates: &mut BTreeSet<PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(e) => {
             debug!("Failed to read directory entries in {}: {}", dir.display(), e);
-            return None;
+            return;
         }
     };
-
-    let mut candidates = vec![];
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(e) => {
-                debug!("Failed to read directory entry in {}: {}", dir.display(), e);
-                continue;
-            }
-        };
-
-        let candidate = entry.path();
-        candidates.push(candidate);
-    }
-
-    // The sorting is unnecessary but it helps with testing certain conditions.
-    candidates.sort();
-
-    for candidate in candidates {
-        let socket = match try_open(&candidate).await {
-            Ok(socket) => socket,
-            Err(e) => {
-                trace!("Ignoring candidate socket {}: {}", candidate.display(), e);
-                continue;
-            }
-        };
-
-        info!("Successfully opened socket at {}", candidate.display());
-        return Some(socket);
-    }
-
-    debug!("No socket in directory {}", dir.display());
-    None
-}
-
-/// Scans the contents of `dir`, which should point to one of the directories where sshd places the
-/// session directories for forwarded agents, looks for a valid connection to an agent, opens the
-/// agent's socket, and returns the connection to the agent.
-async fn try_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<UnixStream> {
-    // It is tempting to use the *at family of system calls to avoid races when checking for
-    // file metadata before opening the socket... but there is no guarantee that the sshd
-    // instance will be present at all even after we open the socket, so the races don't
-    // matter.  Also note that these checks are not meant to protect us against anything in
-    // terms of security: they are merely to keep things speedy and nice.
-
-    let name = dir.file_name().expect(
-            "The candidate path comes from joining a directory to one of its entries, so it must have a name");
-    let name = match name.to_str() {
-        Some(name) => name,
-        None => return Err(error!(ErrorKind::InvalidInput, "Invalid file name")),
-    };
-
-    if !name.starts_with("ssh-") {
-        return Err(error!(ErrorKind::InvalidInput, "Basename does not start with 'ssh-'"));
-    }
-
-    let metadata = fs::metadata(dir).map_err(|e| error!(e.kind(), "Stat failed: {}", e))?;
-
-    if metadata.uid() != uid {
-        return Err(error!(
-            ErrorKind::InvalidInput,
-            "{} is owned by {}, not the current user {}",
-            dir.display(),
-            metadata.uid(),
-            uid
-        ));
-    }
-
-    match find_in_subdir(dir).await {
-        Some(socket) => Ok(socket),
-        None => Err(error!(ErrorKind::NotFound, "No socket in subdirectory")),
-    }
-}
-
-/// Scans the contents of `dir`, which should point to the directory where sshd places the session
-/// directories for forwarded agents, looks for a valid connection to an agent, opens the agent's
-/// socket, and returns the connection to the agent.
-///
-/// This tries all possible directories in search for a socket and only returns an error if no valid
-/// and alive candidate can be found.
-async fn find_in_shared_dir(dir: &Path, our_uid: libc::uid_t) -> Option<UnixStream> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) => {
-            debug!("Failed to read directory entries in {}: {}", dir.display(), e);
-            return None;
-        }
-    };
-
-    let mut subdirs = vec![];
+    let mut found_socket = false;
     for entry in entries {
         let entry = match entry {
             Ok(entry) => entry,
@@ -187,66 +79,92 @@ async fn find_in_shared_dir(dir: &Path, our_uid: libc::uid_t) -> Option<UnixStre
             }
         };
         let path = entry.path();
+        match check_socket(&path) {
+            Ok(()) => {
+                found_socket = true;
+                candidates.insert(path);
+            }
 
+            Err(e) => trace!("Ignoring candidate socket {}: {}", path.display(), e),
+        }
+    }
+    if !found_socket {
+        debug!("Ignoring {}: No socket in subdirectory", dir.display());
+    }
+}
+
+/// Checks that a shared-directory entry has an sshd session name and belongs to `uid`.
+fn check_shared_subdir(dir: &Path, uid: libc::uid_t) -> Result<()> {
+    let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
+        return Err(error!(ErrorKind::InvalidInput, "Invalid file name"));
+    };
+    if !name.starts_with("ssh-") {
+        return Err(error!(ErrorKind::InvalidInput, "Basename does not start with 'ssh-'"));
+    }
+    let metadata = fs::metadata(dir)?;
+    if metadata.uid() != uid {
+        return Err(error!(
+            ErrorKind::InvalidInput,
+            "{} is owned by {}, not the current user {}",
+            dir.display(),
+            metadata.uid(),
+            uid
+        ));
+    }
+    Ok(())
+}
+
+/// Collects candidate sockets from sshd session directories owned by `uid`.
+fn find_in_shared_dir(dir: &Path, uid: libc::uid_t, candidates: &mut BTreeSet<PathBuf>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            debug!("Failed to read directory entries in {}: {}", dir.display(), e);
+            return;
+        }
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                debug!("Failed to read directory entry in {}: {}", dir.display(), e);
+                continue;
+            }
+        };
+        let path = entry.path();
         match entry.file_type() {
             Ok(file_type) if file_type.is_dir() => (),
-            Ok(_file_type) => {
+            Ok(_) => {
                 trace!("Ignoring {}: not a directory", path.display());
                 continue;
             }
+
             Err(e) => {
                 trace!("Ignoring {}: {}", path.display(), e);
                 continue;
             }
-        };
-
-        subdirs.push(path);
+        }
+        match check_shared_subdir(&path, uid) {
+            Ok(()) => find_in_subdir(&path, candidates),
+            Err(e) => trace!("Ignoring {}: {}", path.display(), e),
+        }
     }
-
-    // The sorting is unnecessary but it helps with testing certain conditions.
-    subdirs.sort();
-
-    for subdir in subdirs {
-        let socket = match try_shared_subdir(&subdir, our_uid).await {
-            Ok(socket) => socket,
-            Err(e) => {
-                trace!("Ignoring {}: {}", subdir.display(), e);
-                continue;
-            }
-        };
-
-        return Some(socket);
-    }
-
-    debug!("No socket in directory: {}", dir.display());
-    None
 }
 
-/// Scans the contents of `dirs`, which should point to one or more session directories created
-/// by sshd, looks for a valid socket, opens it, and returns the connection to the agent.
-///
-/// This tries all possible files in search for a socket and only returns an error if no valid
-/// and alive candidate can be found.
-pub(super) async fn find_socket(
+/// Collects candidate paths using sshd naming and ownership checks.
+pub(super) fn find_sockets(
     dirs: &[PathBuf],
     home: Option<&Path>,
     uid: libc::uid_t,
-) -> Option<UnixStream> {
+) -> BTreeSet<PathBuf> {
+    let mut candidates = BTreeSet::new();
     for dir in dirs {
         if let Some(home) = home
             && dir.starts_with(home)
         {
-            debug!("Looking for an agent socket in {} with HOME naming scheme", dir.display());
-            if let Some(socket) = find_in_subdir(dir).await {
-                return Some(socket);
-            }
+            find_in_subdir(dir, &mut candidates);
         }
-
-        debug!("Looking for an agent socket in {} subdirs", dir.display());
-        if let Some(socket) = find_in_shared_dir(dir, uid).await {
-            return Some(socket);
-        }
+        find_in_shared_dir(dir, uid, &mut candidates);
     }
-
-    None
+    candidates
 }

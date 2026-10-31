@@ -22,8 +22,12 @@ in the following sequence of events:
 The ssh-agent-switcher daemon solves this problem by exposing an SSH agent
 socket at a well-known location, allowing you to set `SSH_AUTH_SOCK` to a path
 that does *not* change across different connections.  The daemon then looks for
-a valid socket every time it receives a request and forwards the request to the
-real forwarded agent.
+a responsive socket for each client connection and proxies that connection to
+the real forwarded agent.
+
+The daemon probes the liveliness of candidate sockets in parallel and uses the
+first responsive connection while closing the others.  This is to avoid sockets
+whose SSH connection has stalled (e.g. due to a laptop going to sleep).
 
 ## Installation
 

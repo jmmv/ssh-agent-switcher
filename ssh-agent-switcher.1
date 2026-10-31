@@ -25,7 +25,7 @@
 .\" THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 .\" (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 .\" OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-.Dd December 20, 2025
+.Dd October 30, 2026
 .Dt SSH-AGENT-SWITCHER 1
 .Os
 .Sh NAME
@@ -34,12 +34,14 @@
 .Sh SYNOPSIS
 .Nm
 .Op Fl -agents-dirs Ar dir1:..dirN
+.Op Fl -probe-timeout-secs Ar seconds
 .Op Fl -socket-path Ar path
 .Nm
 .Fl -daemon
 .Op Fl -agents-dirs Ar dir1:..dirN
 .Op Fl -log-file Ar path
 .Op Fl -pid-file Ar path
+.Op Fl -probe-timeout-secs Ar seconds
 .Op Fl -socket-path Ar path
 .Nm
 .Fl -help
@@ -85,8 +87,18 @@ location, allowing you to set
 to a path that does
 .Em not
 change across different connections.
-The daemon then looks for a valid socket every time it receives a request and
-forwards the request to the real forwarded agent.
+The daemon probes candidate sockets in parallel for each client connection,
+requesting their public-key lists.
+It keeps the first responsive connection and closes the other probe connections.
+A responsive agent may have no keys or refuse the listing request.
+Directory order does not determine which agent wins.
+.Pp
+Each client stays connected to its selected agent, and keys from different
+agents are not combined.
+The probe deadline applies only to selection; a later network failure can
+still stall that client.
+Clients are handled concurrently, so other clients and daemon shutdown
+remain independent.
 .Pp
 In the first usage form,
 .Nm
@@ -137,6 +149,11 @@ in daemon mode.
 .It Fl -pid-file Ar path
 Specifies the location of the PID file to create when running in daemon mode.
 This is used as a lock to determine if the daemon should start again or not.
+.It Fl -probe-timeout-secs Ar seconds
+Maximum time for each agent health probe, including connection, request, and
+complete reply.
+Defaults to 5 seconds and must be a positive integer.
+Healthy agents can win immediately without waiting for this deadline.
 .It Fl -socket-path Ar path
 Location where to create the listening agent socket.
 Defaults to

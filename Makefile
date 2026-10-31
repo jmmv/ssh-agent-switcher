@@ -33,7 +33,7 @@ MODE = debug
 sinclude config.mk
 
 BIN = target/$(MODE)/ssh-agent-switcher
-RS_SRCS = src/find.rs src/lib.rs src/main.rs
+RS_SRCS = src/find.rs src/lib.rs src/main.rs src/probe.rs
 SRCS = Cargo.toml $(RS_SRCS)
 
 .PHONY: all

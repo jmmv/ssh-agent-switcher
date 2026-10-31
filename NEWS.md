@@ -4,7 +4,9 @@
 
 **STILL UNDER DEVELOPMENT; NOT RELEASED YET.**
 
-*   No changes recorded.
+*   Added parallel health probes for forwarded agents to avoid selecting sockets
+    backed by unresponsive SSH connections.  The new `--probe-timeout-secs` flag
+    configures the probe deadline.
 
 ## Changes in version 1.0.2
 

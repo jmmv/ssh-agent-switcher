@@ -33,8 +33,10 @@ use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::select;
 use tokio::signal::unix::{SignalKind, signal};
+use tokio::task::JoinSet;
 
 mod find;
+mod probe;
 
 /// Result type for this crate.
 type Result<T> = std::result::Result<T, String>;
@@ -74,8 +76,10 @@ async fn handle_connection(
     agents_dirs: &[PathBuf],
     home: Option<&Path>,
     uid: libc::uid_t,
+    probe_timeout: Duration,
 ) -> Result<()> {
-    let mut agent = match find::find_socket(agents_dirs, home, uid).await {
+    let candidates = find::find_sockets(agents_dirs, home, uid);
+    let mut agent = match probe::select_socket(candidates, probe_timeout).await {
         Some(socket) => socket,
         None => {
             return Err("No agent found; cannot proxy request".to_owned());
@@ -94,7 +98,12 @@ async fn handle_connection(
 /// This serves the SSH agent socket on `socket_path` and looks for sshd sockets in `agents_dirs`.
 ///
 /// The `pid_file` needs to be passed in for cleanup purposes.
-pub async fn run(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBuf) -> Result<()> {
+pub async fn run(
+    socket_path: PathBuf,
+    agents_dirs: &[PathBuf],
+    pid_file: PathBuf,
+    probe_timeout: Duration,
+) -> Result<()> {
     let home = env::var("HOME").map(|v| Some(PathBuf::from(v))).unwrap_or(None);
     let uid = unsafe { libc::getuid() };
 
@@ -110,18 +119,30 @@ pub async fn run(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBu
     let listener = create_listener(&socket_path)?;
 
     debug!("Entering main loop");
+    let mut clients = JoinSet::new();
     let mut stop = None;
     while stop.is_none() {
         select! {
             result = listener.accept() => match result {
                 Ok((socket, _addr)) => {
                     debug!("Connection accepted");
-                    // TODO(jmmv): Connections are handled sequentially.  This is... fine.
-                    if let Err(e) = handle_connection(socket, agents_dirs, home.as_deref(), uid).await {
-                        warn!("Dropping connection due to error: {}", e);
-                    }
+                    let agents_dirs = agents_dirs.to_vec();
+                    let home = home.clone();
+                    clients.spawn(async move {
+                        if let Err(e) = handle_connection(
+                            socket, &agents_dirs, home.as_deref(), uid, probe_timeout,
+                        ).await {
+                            warn!("Dropping connection due to error: {}", e);
+                        }
+                    });
                 }
                 Err(e) => warn!("Failed to accept connection: {}", e),
+            },
+
+            result = clients.join_next(), if !clients.is_empty() => {
+                if let Some(Err(e)) = result {
+                    warn!("Client handler failed: {}", e);
+                }
             },
 
             _ = sighup.recv() => (),
@@ -130,6 +151,8 @@ pub async fn run(socket_path: PathBuf, agents_dirs: &[PathBuf], pid_file: PathBu
             _ = sigterm.recv() => stop = Some("SIGTERM"),
         }
     }
+    clients.abort_all();
+    while clients.join_next().await.is_some() {}
     debug!("Main loop exited");
 
     let stop = stop.expect("Loop can only exit by setting stop");
