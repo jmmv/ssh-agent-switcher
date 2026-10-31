@@ -44,6 +44,10 @@ $(BIN): $(SRCS)
 	    echo cargo build $${arg}; \
 	    cargo build $${arg}
 
+.PHONY: lint
+lint:
+	prek run --all-files
+
 .PHONY: test
 test: $(BIN) inttest
 	cargo test

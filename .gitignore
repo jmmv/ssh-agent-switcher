@@ -1,8 +1,7 @@
-*~
 *.orig
 *.rej
 *.swp
-
+*~
 /target
 config.mk
 inttest
