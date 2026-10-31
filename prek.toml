@@ -1,0 +1,77 @@
+# Copyright 2026 Julio Merino.
+# All rights reserved.
+
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v6.0.0"
+
+[[repos.hooks]]
+id = "check-case-conflict"
+
+[[repos.hooks]]
+id = "check-executables-have-shebangs"
+
+[[repos.hooks]]
+id = "check-merge-conflict"
+
+[[repos.hooks]]
+id = "check-shebang-scripts-are-executable"
+
+[[repos.hooks]]
+id = "check-symlinks"
+
+[[repos.hooks]]
+id = "check-vcs-permalinks"
+
+[[repos.hooks]]
+id = "check-yaml"
+
+[[repos.hooks]]
+id = "detect-private-key"
+
+[[repos.hooks]]
+id = "double-quote-string-fixer"
+
+[[repos.hooks]]
+id = "end-of-file-fixer"
+
+[[repos.hooks]]
+id = "file-contents-sorter"
+files = "\\.gitignore$"
+
+[[repos.hooks]]
+id = "mixed-line-ending"
+args = ["--fix=lf"]
+
+[[repos.hooks]]
+id = "trailing-whitespace"
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "Check Rust clippy"
+language = "system"
+entry = "cargo"
+args = ["clippy", "--all-features", "--all-targets", "--", "-D", "warnings"]
+pass_filenames = false
+always_run = true
+
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "Check Rust fmt"
+language = "system"
+entry = "cargo"
+args = ["fmt", "--", "--check"]
+pass_filenames = false
+always_run = true
+
+[[repos.hooks]]
+id = "do-not-submit"
+name = "Check for [D]O NOT SUBMIT markers"
+language = "system"
+entry = "sh"
+args = ["-c", '! grep -rn "[D]O NOT SUBMIT" --exclude-dir=.git --exclude-dir=target .']
+pass_filenames = false
+always_run = true

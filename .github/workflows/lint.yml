@@ -3,10 +3,11 @@ name: Lint
 on: push
 
 jobs:
-    pre-commit:
+    lint:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
             - run: sudo sh -ec 'echo "set man-db/auto-update false" | debconf-communicate; dpkg-reconfigure man-db'
-            - run: sudo apt-get install pre-commit
-            - run: pre-commit run -a
+            - uses: cargo-bins/cargo-binstall@main
+            - run: cargo binstall --no-confirm prek
+            - run: prek run --all-files
