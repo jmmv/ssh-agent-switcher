@@ -11,5 +11,6 @@ jobs:
             - uses: cargo-bins/cargo-binstall@main
             - run: sudo apt-get update
             - run: sudo apt-get install --yes shellcheck
+            - run: cargo binstall --no-confirm cargo-machete
             - run: cargo binstall --no-confirm prek
             - run: prek run --all-files

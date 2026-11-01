@@ -68,6 +68,15 @@ pass_filenames = false
 always_run = true
 
 [[repos.hooks]]
+id = "cargo-machete"
+name = "Check Rust unused dependencies"
+language = "system"
+entry = "cargo"
+args = ["machete"]
+pass_filenames = false
+files = { glob = ["**/Cargo.toml", "**/Cargo.lock"] }
+
+[[repos.hooks]]
 id = "shellcheck"
 name = "Check shell scripts"
 language = "system"
